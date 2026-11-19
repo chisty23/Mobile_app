@@ -1,0 +1,64 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return signedIn() && request.auth.uid == userId;
+    }
+
+    match /users/{userId} {
+      allow read: if signedIn();
+      allow create: if isOwner(userId);
+      allow update: if isOwner(userId);
+      allow delete: if isOwner(userId);
+
+      match /favorites/{listingId} {
+        allow read, create, delete: if isOwner(userId);
+        allow update: if false;
+      }
+    }
+
+    match /listings/{listingId} {
+      allow read: if signedIn();
+      allow create: if signedIn()
+        && request.resource.data.sellerId == request.auth.uid
+        && request.resource.data.status == 'available'
+        && request.resource.data.price is int
+        && request.resource.data.price > 0;
+      allow update: if signedIn()
+        && (resource.data.sellerId == request.auth.uid
+          || (resource.data.status == 'available'
+            && request.resource.data.status == 'reserved'));
+      allow delete: if signedIn() && resource.data.sellerId == request.auth.uid;
+    }
+
+    match /offers/{offerId} {
+      allow read: if signedIn()
+        && (resource.data.buyerId == request.auth.uid
+          || resource.data.sellerId == request.auth.uid);
+      allow create: if signedIn()
+        && request.resource.data.buyerId == request.auth.uid
+        && request.resource.data.sellerId != request.auth.uid
+        && request.resource.data.amount is int
+        && request.resource.data.amount > 0
+        && request.resource.data.status in ['pending', 'countered'];
+      allow update: if signedIn()
+        && (resource.data.buyerId == request.auth.uid
+          || resource.data.sellerId == request.auth.uid);
+      allow delete: if false;
+    }
+
+    match /ratings/{listingId} {
+      allow read: if signedIn();
+      allow create: if signedIn()
+        && request.resource.data.buyerId == request.auth.uid
+        && request.resource.data.stars is int
+        && request.resource.data.stars >= 1
+        && request.resource.data.stars <= 5;
+      allow update, delete: if false;
+    }
+  }
+}

@@ -1,0 +1,48 @@
+{
+  "project_info": {
+    "project_number": "845279128983",
+    "project_id": "pass-it-on-2f422",
+    "storage_bucket": "pass-it-on-2f422.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:845279128983:android:c626681cc9cebfdb92e8d2",
+        "android_client_info": {
+          "package_name": "com.example.pass_it_on"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCsjYIx-Bfm1gPMtMoKh5SHLC1ZV-wlH7o"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:845279128983:android:cdf9a6d3837e05d192e8d2",
+        "android_client_info": {
+          "package_name": "com.passiton.app.pass_it_on"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCsjYIx-Bfm1gPMtMoKh5SHLC1ZV-wlH7o"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
