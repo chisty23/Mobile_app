@@ -34,7 +34,7 @@ class _RootScreenState extends State<RootScreen> {
               gradient: LinearGradient(
                 begin: Alignment.topLeft,
                 end: Alignment.bottomRight,
-                colors: [Color(0xFFF4F7FB), Color(0xFFF0F4FF)],
+                colors: [Color(0xFFF3F1EC), Color(0xFFECEBE6)],
               ),
             ),
           ),
@@ -46,7 +46,7 @@ class _RootScreenState extends State<RootScreen> {
               height: 260,
               decoration: BoxDecoration(
                 shape: BoxShape.circle,
-                color: const Color(0xFF6552FF).withValues(alpha: 0.08),
+                color: const Color(0xFFC69C55).withValues(alpha: 0.08),
               ),
             ),
           ),
@@ -64,7 +64,7 @@ class _RootScreenState extends State<RootScreen> {
               selectedIndex: index,
               onDestinationSelected: (value) => setState(() => index = value),
               backgroundColor: Colors.white.withValues(alpha: 0.88),
-              indicatorColor: const Color(0xFF6552FF).withValues(alpha: 0.12),
+              indicatorColor: const Color(0xFFC69C55).withValues(alpha: 0.16),
               destinations: const [
                 NavigationDestination(
                   icon: Icon(Icons.explore_outlined),

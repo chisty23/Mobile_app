@@ -411,64 +411,83 @@ class OfferProvider extends ChangeNotifier {
     error = null;
     notifyListeners();
     try {
-      await _db.runTransaction((transaction) async {
-        final listingRef = _db.collection('listings').doc(listing.id);
-        final listingSnap = await transaction.get(listingRef);
-        if (!listingSnap.exists)
-          throw Exception('This listing no longer exists');
-        final live = listingSnap.data()!;
-        if (live['status'] == 'sold') {
-          throw Exception('This listing has already been sold');
-        }
-        if (live['status'] != 'available') {
-          throw Exception('This listing is not available');
-        }
+      final uid = FirebaseAuth.instance.currentUser!.uid;
+      final profile = await _db
+          .collection('users')
+          .doc(uid)
+          .get()
+          .timeout(const Duration(seconds: 8));
+      final buyerName =
+          profile.data()?['name'] ??
+          FirebaseAuth.instance.currentUser?.displayName ??
+          'Buyer';
 
-        final uid = FirebaseAuth.instance.currentUser!.uid;
-        final profile = await _db.collection('users').doc(uid).get();
-        final buyerName =
-            profile.data()?['name'] ??
-            FirebaseAuth.instance.currentUser?.displayName ??
-            'Buyer';
-        final existing = await _db
-            .collection('offers')
-            .where('listingId', isEqualTo: listing.id)
-            .where('buyerId', isEqualTo: uid)
-            .where('status', whereIn: ['pending', 'countered'])
-            .limit(1)
-            .get();
+      final legacyOffers = await _db
+          .collection('offers')
+          .where('buyerId', isEqualTo: uid)
+          .get()
+          .timeout(const Duration(seconds: 8));
 
-        final now = FieldValue.serverTimestamp();
-        if (existing.docs.isEmpty) {
-          final ref = _db.collection('offers').doc();
-          transaction.set(ref, {
-            'listingId': listing.id,
-            'listingTitle': listing.title,
-            'sellerId': listing.sellerId,
-            'buyerId': uid,
-            'buyerName': buyerName,
-            'amount': amount,
-            'history': [
-              {'by': uid, 'amount': amount, 'at': now},
-            ],
-            'message': message.trim(),
-            'status': 'pending',
-            'createdAt': now,
-            'updatedAt': now,
-          });
-        } else {
-          transaction.update(existing.docs.first.reference, {
-            'amount': amount,
-            'message': message.trim(),
-            'status': 'pending',
-            'updatedAt': now,
-            'history': FieldValue.arrayUnion([
-              {'by': uid, 'amount': amount},
-            ]),
-          });
+      DocumentReference<Map<String, dynamic>>? existingRef;
+      for (final doc in legacyOffers.docs) {
+        final data = doc.data();
+        final status = data['status'];
+        if (data['listingId'] == listing.id &&
+            (status == 'pending' || status == 'countered')) {
+          existingRef = doc.reference;
+          break;
         }
-      });
+      }
+
+      await _db
+          .runTransaction((transaction) async {
+            final listingRef = _db.collection('listings').doc(listing.id);
+            final listingSnap = await transaction.get(listingRef);
+            if (!listingSnap.exists)
+              throw Exception('This listing no longer exists');
+            final live = listingSnap.data()!;
+            if (live['status'] == 'sold') {
+              throw Exception('This listing has already been sold');
+            }
+            if (live['status'] != 'available') {
+              throw Exception('This listing is not available');
+            }
+
+            final now = FieldValue.serverTimestamp();
+            if (existingRef == null) {
+              final ref = _db.collection('offers').doc('${listing.id}_$uid');
+              transaction.set(ref, {
+                'listingId': listing.id,
+                'listingTitle': listing.title,
+                'sellerId': listing.sellerId,
+                'buyerId': uid,
+                'buyerName': buyerName,
+                'amount': amount,
+                'history': [
+                  {'by': uid, 'amount': amount, 'at': now},
+                ],
+                'message': message.trim(),
+                'status': 'pending',
+                'createdAt': now,
+                'updatedAt': now,
+              });
+            } else {
+              transaction.update(existingRef, {
+                'amount': amount,
+                'message': message.trim(),
+                'status': 'pending',
+                'updatedAt': now,
+                'history': FieldValue.arrayUnion([
+                  {'by': uid, 'amount': amount},
+                ]),
+              });
+            }
+          })
+          .timeout(const Duration(seconds: 12));
       return true;
+    } on TimeoutException {
+      error = 'The request took too long. Check your connection and try again.';
+      return false;
     } on Exception catch (e) {
       error = e.toString().replaceFirst('Exception: ', '');
       return false;

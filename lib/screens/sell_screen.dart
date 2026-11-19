@@ -31,7 +31,7 @@ class SellScreen extends StatelessWidget {
                   Container(
                     decoration: BoxDecoration(
                       gradient: const LinearGradient(
-                        colors: [Color(0xFF6552FF), Color(0xFF8172FF)],
+                        colors: [Color(0xFF252832), Color(0xFF667B72)],
                       ),
                       borderRadius: BorderRadius.circular(16),
                     ),
@@ -132,7 +132,7 @@ class _MyListingCard extends StatelessWidget {
             height: 64,
             decoration: BoxDecoration(
               gradient: const LinearGradient(
-                colors: [Color(0xFF6552FF), Color(0xFF24C3A6)],
+                colors: [Color(0xFF252832), Color(0xFF667B72)],
               ),
               borderRadius: BorderRadius.circular(16),
             ),
@@ -168,7 +168,7 @@ class _MyListingCard extends StatelessWidget {
                 Text(
                   '${listing.price} ৳',
                   style: const TextStyle(
-                    color: Color(0xFF6552FF),
+                    color: Color(0xFF252832),
                     fontWeight: FontWeight.w900,
                   ),
                 ),
@@ -369,7 +369,7 @@ class _CreateListingSheetState extends State<CreateListingSheet> {
                       }
                     },
               style: FilledButton.styleFrom(
-                backgroundColor: const Color(0xFF6552FF),
+                backgroundColor: const Color(0xFF252832),
                 shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(16),
                 ),

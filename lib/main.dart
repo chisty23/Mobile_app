@@ -33,12 +33,12 @@ class PassItOnApp extends StatelessWidget {
         theme: ThemeData(
           useMaterial3: true,
           brightness: Brightness.light,
-          scaffoldBackgroundColor: const Color(0xFFF4F7FB),
+          scaffoldBackgroundColor: const Color(0xFFF3F1EC),
           colorScheme: ColorScheme.fromSeed(
-            seedColor: const Color(0xFF6552FF),
+            seedColor: const Color(0xFF252832),
             brightness: Brightness.light,
-            primary: const Color(0xFF6552FF),
-            secondary: const Color(0xFF24C3A6),
+            primary: const Color(0xFF252832),
+            secondary: const Color(0xFF667B72),
           ),
           fontFamily: 'Roboto',
         ),

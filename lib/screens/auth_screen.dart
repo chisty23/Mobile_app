@@ -36,7 +36,7 @@ class _AuthScreenState extends State<AuthScreen> {
           gradient: LinearGradient(
             begin: Alignment.topLeft,
             end: Alignment.bottomRight,
-            colors: [Color(0xFFF1EFFF), Color(0xFFEAFBF7), Color(0xFFFFF4E8)],
+            colors: [Color(0xFFF3F1EC), Color(0xFFEAE8E1), Color(0xFFE8ECE8)],
           ),
         ),
         child: SafeArea(
@@ -69,7 +69,7 @@ class _AuthScreenState extends State<AuthScreen> {
                             height: 48,
                             decoration: BoxDecoration(
                               gradient: const LinearGradient(
-                                colors: [Color(0xFF6552FF), Color(0xFF24C3A6)],
+                                colors: [Color(0xFF252832), Color(0xFF667B72)],
                               ),
                               borderRadius: BorderRadius.circular(16),
                             ),
@@ -199,7 +199,7 @@ class _AuthScreenState extends State<AuthScreen> {
                                   }
                                 },
                           style: FilledButton.styleFrom(
-                            backgroundColor: const Color(0xFF6552FF),
+                            backgroundColor: const Color(0xFF252832),
                             shape: RoundedRectangleBorder(
                               borderRadius: BorderRadius.circular(16),
                             ),

@@ -105,7 +105,7 @@ class BrowseScreen extends StatelessWidget {
                         child: ChoiceChip(
                           label: Text(item),
                           selected: listing.category == item,
-                          selectedColor: const Color(0xFF6552FF),
+                          selectedColor: const Color(0xFF252832),
                           labelStyle: TextStyle(
                             color: listing.category == item
                                 ? Colors.white
@@ -317,7 +317,7 @@ class _ListingCard extends StatelessWidget {
                                   : Icons.favorite_border,
                               size: 19,
                               color: isFavorite
-                                  ? const Color(0xFFFF5C78)
+                                  ? const Color(0xFFC69C55)
                                   : const Color(0xFF3D4152),
                             ),
                           ),
@@ -352,7 +352,7 @@ class _ListingCard extends StatelessWidget {
                       Text(
                         '${_money(listing.price)} ৳',
                         style: const TextStyle(
-                          color: Color(0xFF6552FF),
+                          color: Color(0xFF252832),
                           fontSize: 17,
                           fontWeight: FontWeight.w900,
                         ),
@@ -387,11 +387,11 @@ class _ListingCard extends StatelessWidget {
 
   LinearGradient _categoryGradient(String category) {
     const palettes = {
-      'Books': [Color(0xFF7355FF), Color(0xFF9C8AFF)],
-      'Electronics': [Color(0xFF32C4A3), Color(0xFF73D9C3)],
-      'Fashion': [Color(0xFFFF9B75), Color(0xFFFFC4A8)],
-      'Sports': [Color(0xFF3F8EF7), Color(0xFF77AFFB)],
-      'Furniture': [Color(0xFFAA7B56), Color(0xFFD3AA8B)],
+      'Books': [Color(0xFF4E5A58), Color(0xFF7C8986)],
+      'Electronics': [Color(0xFF667B72), Color(0xFF91A49D)],
+      'Fashion': [Color(0xFF9A815A), Color(0xFFBEA984)],
+      'Sports': [Color(0xFF4A5565), Color(0xFF818B99)],
+      'Furniture': [Color(0xFF806D57), Color(0xFFA99980)],
       'Other': [Color(0xFF697184), Color(0xFFA1A7B5)],
     };
     final colors = palettes[category] ?? palettes['Other']!;
@@ -414,6 +414,7 @@ class ListingDetailSheet extends StatefulWidget {
 class _ListingDetailSheetState extends State<ListingDetailSheet> {
   final amount = TextEditingController();
   final message = TextEditingController();
+  bool submitting = false;
 
   @override
   void dispose() {
@@ -470,7 +471,7 @@ class _ListingDetailSheetState extends State<ListingDetailSheet> {
             Text(
               '${_money(widget.listing.price)} ৳',
               style: const TextStyle(
-                color: Color(0xFF6552FF),
+                color: const Color(0xFF252832),
                 fontSize: 24,
                 fontWeight: FontWeight.w900,
               ),
@@ -499,7 +500,7 @@ class _ListingDetailSheetState extends State<ListingDetailSheet> {
             ListTile(
               contentPadding: EdgeInsets.zero,
               leading: CircleAvatar(
-                backgroundColor: const Color(0xFFEAE7FF),
+                backgroundColor: const Color(0xFFF0EBDC),
                 child: Text(
                   widget.listing.sellerName.isEmpty
                       ? '?'
@@ -517,7 +518,7 @@ class _ListingDetailSheetState extends State<ListingDetailSheet> {
                   listingProvider.favoriteIds.contains(widget.listing.id)
                       ? Icons.favorite
                       : Icons.favorite_border,
-                  color: const Color(0xFFFF5C78),
+                  color: const Color(0xFFC69C55),
                 ),
               ),
             ),
@@ -542,17 +543,19 @@ class _ListingDetailSheetState extends State<ListingDetailSheet> {
                 width: double.infinity,
                 height: 52,
                 child: FilledButton(
-                  onPressed: offers.busy
+                  onPressed: submitting || offers.busy
                       ? null
                       : () async {
                           final value = int.tryParse(amount.text.trim());
                           if (value == null) return;
-                          final ok = await offers.makeOffer(
-                            widget.listing,
-                            value,
-                            message.text,
-                          );
-                          if (context.mounted) {
+                          setState(() => submitting = true);
+                          try {
+                            final ok = await offers.makeOffer(
+                              widget.listing,
+                              value,
+                              message.text,
+                            );
+                            if (!mounted) return;
                             ScaffoldMessenger.of(context).showSnackBar(
                               SnackBar(
                                 content: Text(
@@ -563,15 +566,19 @@ class _ListingDetailSheetState extends State<ListingDetailSheet> {
                               ),
                             );
                             if (ok) Navigator.pop(context);
+                          } finally {
+                            if (mounted) {
+                              setState(() => submitting = false);
+                            }
                           }
                         },
                   style: FilledButton.styleFrom(
-                    backgroundColor: const Color(0xFF6552FF),
+                    backgroundColor: const Color(0xFF252832),
                     shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(16),
                     ),
                   ),
-                  child: offers.busy
+                  child: submitting || offers.busy
                       ? const SizedBox(
                           width: 22,
                           height: 22,

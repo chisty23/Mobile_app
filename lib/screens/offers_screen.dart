@@ -54,7 +54,7 @@ class _OffersScreenState extends State<OffersScreen>
                 controller: tabs,
                 indicatorSize: TabBarIndicatorSize.tab,
                 indicator: BoxDecoration(
-                  color: const Color(0xFF6552FF),
+                  color: const Color(0xFF252832),
                   borderRadius: BorderRadius.circular(12),
                 ),
                 indicatorPadding: const EdgeInsets.all(5),
@@ -164,7 +164,7 @@ class _OfferCard extends StatelessWidget {
           Text(
             '${offer.amount} ৳',
             style: const TextStyle(
-              color: Color(0xFF6552FF),
+              color: Color(0xFF252832),
               fontSize: 22,
               fontWeight: FontWeight.w900,
             ),
@@ -209,7 +209,7 @@ class _OfferCard extends StatelessWidget {
                               _snack(context, ok, provider.error);
                             },
                       style: FilledButton.styleFrom(
-                        backgroundColor: const Color(0xFF6552FF),
+                        backgroundColor: const Color(0xFF252832),
                       ),
                       child: const Text('Accept'),
                     ),

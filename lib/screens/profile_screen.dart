@@ -43,7 +43,7 @@ class ProfileScreen extends StatelessWidget {
                   gradient: const LinearGradient(
                     begin: Alignment.topLeft,
                     end: Alignment.bottomRight,
-                    colors: [Color(0xFF6552FF), Color(0xFF8172FF)],
+                    colors: [Color(0xFF252832), Color(0xFF667B72)],
                   ),
                   borderRadius: BorderRadius.circular(26),
                 ),
@@ -55,7 +55,7 @@ class ProfileScreen extends StatelessWidget {
                       child: Text(
                         name.isEmpty ? '?' : name[0].toUpperCase(),
                         style: const TextStyle(
-                          color: Color(0xFF6552FF),
+                          color: Color(0xFF252832),
                           fontSize: 28,
                           fontWeight: FontWeight.w900,
                         ),
