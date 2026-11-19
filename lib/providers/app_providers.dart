@@ -412,32 +412,9 @@ class OfferProvider extends ChangeNotifier {
     notifyListeners();
     try {
       final uid = FirebaseAuth.instance.currentUser!.uid;
-      final profile = await _db
-          .collection('users')
-          .doc(uid)
-          .get()
-          .timeout(const Duration(seconds: 8));
       final buyerName =
-          profile.data()?['name'] ??
-          FirebaseAuth.instance.currentUser?.displayName ??
-          'Buyer';
-
-      final legacyOffers = await _db
-          .collection('offers')
-          .where('buyerId', isEqualTo: uid)
-          .get()
-          .timeout(const Duration(seconds: 8));
-
-      DocumentReference<Map<String, dynamic>>? existingRef;
-      for (final doc in legacyOffers.docs) {
-        final data = doc.data();
-        final status = data['status'];
-        if (data['listingId'] == listing.id &&
-            (status == 'pending' || status == 'countered')) {
-          existingRef = doc.reference;
-          break;
-        }
-      }
+          FirebaseAuth.instance.currentUser?.displayName ?? 'Buyer';
+      final offerRef = _db.collection('offers').doc('${listing.id}_$uid');
 
       await _db
           .runTransaction((transaction) async {
@@ -453,37 +430,43 @@ class OfferProvider extends ChangeNotifier {
               throw Exception('This listing is not available');
             }
 
-            final now = FieldValue.serverTimestamp();
-            if (existingRef == null) {
-              final ref = _db.collection('offers').doc('${listing.id}_$uid');
-              transaction.set(ref, {
-                'listingId': listing.id,
-                'listingTitle': listing.title,
-                'sellerId': listing.sellerId,
-                'buyerId': uid,
-                'buyerName': buyerName,
-                'amount': amount,
-                'history': [
-                  {'by': uid, 'amount': amount, 'at': now},
-                ],
-                'message': message.trim(),
-                'status': 'pending',
-                'createdAt': now,
-                'updatedAt': now,
-              });
-            } else {
-              transaction.update(existingRef, {
-                'amount': amount,
-                'message': message.trim(),
-                'status': 'pending',
-                'updatedAt': now,
-                'history': FieldValue.arrayUnion([
-                  {'by': uid, 'amount': amount},
-                ]),
-              });
+            final offerSnap = await transaction.get(offerRef);
+            final existing = offerSnap.data();
+            if (existing != null) {
+              final status = existing['status'];
+              if (status == 'accepted' ||
+                  status == 'declined' ||
+                  status == 'withdrawn') {
+                throw Exception(
+                  'Your previous offer is closed. Create a new offer from a renewed listing.',
+                );
+              }
             }
+
+            final now = FieldValue.serverTimestamp();
+            transaction.set(offerRef, {
+              'listingId': listing.id,
+              'listingTitle': listing.title,
+              'sellerId': listing.sellerId,
+              'buyerId': uid,
+              'buyerName': buyerName,
+              'amount': amount,
+              'history': existing == null
+                  ? [
+                      {'by': uid, 'amount': amount, 'at': now},
+                    ]
+                  : FieldValue.arrayUnion([
+                      {'by': uid, 'amount': amount},
+                    ]),
+              'message': message.trim(),
+              'status': 'pending',
+              'createdAt': existing == null
+                  ? now
+                  : existing['createdAt'] ?? now,
+              'updatedAt': now,
+            }, SetOptions(merge: true));
           })
-          .timeout(const Duration(seconds: 12));
+          .timeout(const Duration(seconds: 8));
       return true;
     } on TimeoutException {
       error = 'The request took too long. Check your connection and try again.';

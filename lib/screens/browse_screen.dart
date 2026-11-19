@@ -267,9 +267,9 @@ class _ListingCard extends StatelessWidget {
           filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
           child: Container(
             decoration: BoxDecoration(
-              color: Colors.white.withValues(alpha: 0.86),
+              color: Colors.white.withValues(alpha: 0.68),
               borderRadius: BorderRadius.circular(22),
-              border: Border.all(color: Colors.white),
+              border: Border.all(color: Colors.white.withValues(alpha: 0.88)),
             ),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,

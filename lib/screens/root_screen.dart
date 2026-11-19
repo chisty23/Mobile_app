@@ -56,14 +56,14 @@ class _RootScreenState extends State<RootScreen> {
       bottomNavigationBar: Padding(
         padding: const EdgeInsets.fromLTRB(16, 0, 16, 14),
         child: ClipRRect(
-          borderRadius: BorderRadius.circular(24),
+          borderRadius: BorderRadius.circular(22),
           child: BackdropFilter(
-            filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
+            filter: ImageFilter.blur(sigmaX: 22, sigmaY: 22),
             child: NavigationBar(
               height: 68,
               selectedIndex: index,
               onDestinationSelected: (value) => setState(() => index = value),
-              backgroundColor: Colors.white.withValues(alpha: 0.88),
+              backgroundColor: Colors.white.withValues(alpha: 0.72),
               indicatorColor: const Color(0xFFC69C55).withValues(alpha: 0.16),
               destinations: const [
                 NavigationDestination(
