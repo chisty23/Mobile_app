@@ -1,0 +1,64 @@
+name: Deploy PassItOn to Firebase on Push
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  build_test_and_deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Flutter SDK
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Setup Node.js for Cloud Functions
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: functions/package-lock.json
+
+      - name: Install Flutter dependencies
+        run: flutter pub get
+
+      - name: Static analysis
+        run: flutter analyze
+
+      - name: Run unit & widget tests
+        run: flutter test
+
+      - name: Validate Cloud Functions
+        run: |
+          cd functions
+          npm ci
+          node --check index.js
+
+      - name: Build production web bundle
+        run: flutter build web --release
+
+      - name: Deploy Hosting to Firebase
+        uses: FirebaseExtended/action-hosting-deploy@v0
+        if: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_PASS_IT_ON_2F422 != '' }}
+        with:
+          repoToken: ${{ secrets.GITHUB_TOKEN }}
+          firebaseServiceAccount: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_PASS_IT_ON_2F422 }}
+          projectId: pass-it-on-2f422
+          channelId: live
+
+      - name: Deploy Firestore Rules & Indexes
+        if: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_PASS_IT_ON_2F422 != '' }}
+        env:
+          SA_JSON: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_PASS_IT_ON_2F422 }}
+        run: |
+          echo "$SA_JSON" > /tmp/sa.json
+          export GOOGLE_APPLICATION_CREDENTIALS=/tmp/sa.json
+          npx --yes firebase-tools@latest deploy --only firestore --project pass-it-on-2f422 --non-interactive
+          rm -f /tmp/sa.json

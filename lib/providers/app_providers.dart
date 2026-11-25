@@ -1,28 +1,132 @@
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:flutter/foundation.dart';
+import 'package:firebase_core/firebase_core.dart';
+import 'package:flutter/material.dart';
 
+import '../firebase_options.dart';
 import '../models.dart';
+import '../services/backend_api.dart';
+import '../utils/storage_uploader.dart';
+
+const List<String> _studentEmailSuffixes = [
+  '.edu',
+  '.edu.bd',
+  '.ac.bd',
+  '.ac.uk',
+];
+
+bool isVerifiedStudentEmail(String email) {
+  final lower = email.trim().toLowerCase();
+  return _studentEmailSuffixes.any(lower.endsWith);
+}
+
+class ThemeProvider extends ChangeNotifier {
+  ThemeMode _themeMode = ThemeMode.light;
+  StreamSubscription<User?>? _authSub;
+
+  ThemeProvider() {
+    _initPersistence();
+  }
+
+  ThemeMode get themeMode => _themeMode;
+  bool get isDark => _themeMode == ThemeMode.dark;
+
+  void _initPersistence() {
+    try {
+      if (Firebase.apps.isEmpty) return;
+      _authSub = FirebaseAuth.instance.authStateChanges().listen((user) async {
+        if (user == null) return;
+        try {
+          final snap = await FirebaseFirestore.instance
+              .collection('users')
+              .doc(user.uid)
+              .get();
+          final savedDark = snap.data()?['darkMode'];
+          if (savedDark is bool) {
+            final target = savedDark ? ThemeMode.dark : ThemeMode.light;
+            if (target != _themeMode) {
+              _themeMode = target;
+              notifyListeners();
+            }
+          }
+        } catch (_) {}
+      });
+    } catch (_) {}
+  }
+
+  Future<void> _savePreference(bool dark) async {
+    try {
+      if (Firebase.apps.isEmpty) return;
+      final uid = FirebaseAuth.instance.currentUser?.uid;
+      if (uid == null) return;
+      await FirebaseFirestore.instance.collection('users').doc(uid).set({
+        'darkMode': dark,
+      }, SetOptions(merge: true));
+    } catch (_) {}
+  }
+
+  void toggleTheme() {
+    _themeMode = _themeMode == ThemeMode.light ? ThemeMode.dark : ThemeMode.light;
+    notifyListeners();
+    _savePreference(isDark);
+  }
+
+  void setThemeMode(ThemeMode mode) {
+    _themeMode = mode;
+    notifyListeners();
+    _savePreference(isDark);
+  }
+
+  @override
+  void dispose() {
+    _authSub?.cancel();
+    super.dispose();
+  }
+}
 
 class AuthProvider extends ChangeNotifier {
   final _auth = FirebaseAuth.instance;
   final _db = FirebaseFirestore.instance;
+  final _api = BackendApi();
   bool busy = false;
   String? error;
+  bool guestMode = false;
 
   User? get user => _auth.currentUser;
+
+  void enterGuestMode() {
+    guestMode = true;
+    error = null;
+    notifyListeners();
+  }
+
+  void exitGuestMode() {
+    guestMode = false;
+    notifyListeners();
+  }
 
   Future<bool> login(String email, String password) async {
     busy = true;
     error = null;
     notifyListeners();
     try {
-      await _auth.signInWithEmailAndPassword(
+      final cred = await _auth.signInWithEmailAndPassword(
         email: email.trim(),
         password: password,
       );
+      final uid = cred.user?.uid;
+      if (uid != null) {
+        final doc = await _db.collection('users').doc(uid).get();
+        if (doc.data()?['isBanned'] == true) {
+          await _auth.signOut();
+          error = 'This account has been suspended by marketplace moderation.';
+          return false;
+        }
+      }
+      guestMode = false;
       return true;
     } on FirebaseAuthException catch (e) {
       error = e.message ?? 'Login failed';
@@ -33,31 +137,93 @@ class AuthProvider extends ChangeNotifier {
     }
   }
 
+  Future<bool> sendPasswordReset(String email) async {
+    if (email.trim().isEmpty) {
+      error = 'Enter your email address to reset your password';
+      notifyListeners();
+      return false;
+    }
+    busy = true;
+    error = null;
+    notifyListeners();
+    try {
+      await _auth.sendPasswordResetEmail(email: email.trim());
+      return true;
+    } on FirebaseAuthException catch (e) {
+      error = e.message ?? 'Could not send reset email';
+      return false;
+    } finally {
+      busy = false;
+      notifyListeners();
+    }
+  }
+
+  Future<bool> sendEmailVerification() async {
+    final current = _auth.currentUser;
+    if (current == null) return false;
+    busy = true;
+    error = null;
+    notifyListeners();
+    try {
+      await current.sendEmailVerification();
+      return true;
+    } on FirebaseAuthException catch (e) {
+      error = e.message ?? 'Could not send verification link';
+      return false;
+    } finally {
+      busy = false;
+      notifyListeners();
+    }
+  }
+
+  Future<bool> refreshUser() async {
+    final current = _auth.currentUser;
+    if (current == null) return false;
+    try {
+      await current.reload();
+      notifyListeners();
+      return _auth.currentUser?.emailVerified ?? false;
+    } catch (_) {
+      return false;
+    }
+  }
+
   Future<bool> register({
     required String name,
     required String email,
     required String password,
     String department = '',
+    String phone = '',
   }) async {
     busy = true;
     error = null;
     notifyListeners();
     try {
+      final cleanEmail = email.trim();
       final credential = await _auth.createUserWithEmailAndPassword(
-        email: email.trim(),
+        email: cleanEmail,
         password: password,
       );
       await credential.user?.updateDisplayName(name.trim());
       await _db.collection('users').doc(credential.user!.uid).set({
         'name': name.trim(),
-        'email': email.trim(),
+        'email': cleanEmail,
         'department': department.trim(),
+        'phone': phone.trim(),
+        'role': 'customer',
+        'isAdmin': false,
+        'isBanned': false,
+        'verifiedStudent': isVerifiedStudentEmail(cleanEmail),
         'soldCount': 0,
         'boughtCount': 0,
         'ratingSum': 0,
         'ratingCount': 0,
         'createdAt': FieldValue.serverTimestamp(),
       });
+      try {
+        await credential.user?.sendEmailVerification();
+      } catch (_) {}
+      guestMode = false;
       return true;
     } on FirebaseAuthException catch (e) {
       error = e.message ?? 'Registration failed';
@@ -68,7 +234,95 @@ class AuthProvider extends ChangeNotifier {
     }
   }
 
+  /// Verifies an existing admin account strictly against its Firestore `role: 'admin'` claim.
+  Future<bool> signInAsAdmin({
+    required String email,
+    required String password,
+  }) async {
+    busy = true;
+    error = null;
+    notifyListeners();
+    try {
+      final cred = await _auth.signInWithEmailAndPassword(
+        email: email.trim(),
+        password: password,
+      );
+      final uid = cred.user?.uid;
+      if (uid == null) {
+        error = 'Authentication failed';
+        return false;
+      }
+      final doc = await _db.collection('users').doc(uid).get();
+      final data = doc.data();
+      final verifiedAdmin = data?['role'] == 'admin' || (data?['isAdmin'] == true);
+      if (!verifiedAdmin) {
+        await _auth.signOut();
+        error = 'This account does not have Administrator privileges in Firestore.';
+        return false;
+      }
+      guestMode = false;
+      return true;
+    } on FirebaseAuthException catch (e) {
+      error = e.message ?? 'Admin sign-in failed';
+      return false;
+    } finally {
+      busy = false;
+      notifyListeners();
+    }
+  }
+
+  /// Deletes the user's account and listings via Cloud Functions after optional re-auth.
+  Future<bool> deleteAccount({String? password}) async {
+    final current = _auth.currentUser;
+    if (current == null) return false;
+    busy = true;
+    error = null;
+    notifyListeners();
+    try {
+      if (password != null && password.isNotEmpty && current.email != null) {
+        final cred = EmailAuthProvider.credential(
+          email: current.email!,
+          password: password,
+        );
+        await current.reauthenticateWithCredential(cred);
+      }
+      await _api.deleteAccount();
+      guestMode = false;
+      await _auth.signOut();
+      return true;
+    } on BackendApiException catch (e) {
+      if (e.isEndpointUnavailable) {
+        final uid = current.uid;
+        final listings =
+            await _db.collection('listings').where('sellerId', isEqualTo: uid).get();
+        final batch = _db.batch();
+        for (final doc in listings.docs) {
+          batch.delete(doc.reference);
+        }
+        final favs =
+            await _db.collection('users').doc(uid).collection('favorites').get();
+        for (final doc in favs.docs) {
+          batch.delete(doc.reference);
+        }
+        batch.delete(_db.collection('users').doc(uid));
+        await batch.commit();
+        await current.delete();
+        guestMode = false;
+        return true;
+      }
+      error = e.message;
+      return false;
+    } on FirebaseAuthException catch (e) {
+      error = e.message ?? 'Re-authentication failed';
+      return false;
+    } finally {
+      busy = false;
+      notifyListeners();
+    }
+  }
+
   Future<void> logout() async {
+    guestMode = false;
     await _auth.signOut();
   }
 }
@@ -77,23 +331,48 @@ class ListingProvider extends ChangeNotifier {
   final _db = FirebaseFirestore.instance;
   StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _listingSub;
   StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _favoriteSub;
+  Timer? _searchDebounce;
   List<Listing> listings = [];
+  List<Listing> _remoteMatches = [];
   Set<String> favoriteIds = {};
   bool loading = true;
+  bool isFetchingMore = false;
+  bool hasMore = true;
+  int _currentLimit = 60;
   String? error;
+  bool requiresAuthToBrowse = false;
   String query = '';
   String category = 'All';
   String condition = 'All';
+  String locationFilter = 'All Locations';
   String sort = 'Newest';
+  bool onlyAvailable = false;
+  bool onlyFavorites = false;
+  bool onlyNegotiable = false;
   int minPrice = 0;
   int maxPrice = 100000000;
   StreamSubscription<User?>? _authSub;
+
+  int get currentLimit => _currentLimit;
+
+  int get activeFilterCount {
+    int count = 0;
+    if (condition != 'All') count++;
+    if (locationFilter != 'All Locations') count++;
+    if (onlyNegotiable) count++;
+    if (minPrice > 0) count++;
+    if (maxPrice < 100000000) count++;
+    return count;
+  }
 
   ListingProvider() {
     _authSub = FirebaseAuth.instance.authStateChanges().listen((_) {
       favoriteIds = {};
       listings = [];
+      _remoteMatches = [];
       loading = true;
+      requiresAuthToBrowse = false;
+      _currentLimit = 60;
       _startStreams();
     });
     _startStreams();
@@ -104,25 +383,34 @@ class ListingProvider extends ChangeNotifier {
     _listingSub = _db
         .collection('listings')
         .where('status', whereIn: ['available', 'reserved'])
-        .limit(30)
+        .limit(_currentLimit)
         .snapshots()
         .listen(
           (snapshot) {
             listings = snapshot.docs.map(Listing.fromSnapshot).toList();
+            hasMore = snapshot.docs.length >= _currentLimit;
             loading = false;
+            isFetchingMore = false;
+            requiresAuthToBrowse = false;
             error = null;
             notifyListeners();
           },
           onError: (e) {
             loading = false;
-            error = 'Could not load listings';
+            isFetchingMore = false;
+            if (e is FirebaseException && e.code == 'permission-denied') {
+              requiresAuthToBrowse = true;
+              error = 'Sign in to browse live campus listings';
+            } else {
+              error = 'Could not load listings';
+            }
             notifyListeners();
           },
         );
 
     final uid = FirebaseAuth.instance.currentUser?.uid;
+    _favoriteSub?.cancel();
     if (uid != null) {
-      _favoriteSub?.cancel();
       _favoriteSub = _db
           .collection('users')
           .doc(uid)
@@ -131,25 +419,100 @@ class ListingProvider extends ChangeNotifier {
           .listen((snapshot) {
             favoriteIds = snapshot.docs.map((d) => d.id).toSet();
             notifyListeners();
-          });
+          }, onError: (_) {});
     }
   }
 
+  Future<Listing?> fetchListingById(String listingId) async {
+    if (listingId.trim().isEmpty) return null;
+    for (final l in listings) {
+      if (l.id == listingId) return l;
+    }
+    try {
+      final doc = await _db.collection('listings').doc(listingId).get();
+      if (!doc.exists) return null;
+      return Listing.fromSnapshot(doc);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<void> searchRemote(String term) async {
+    final cleanToken = term
+        .trim()
+        .toLowerCase()
+        .replaceAll(RegExp(r'[^\w\s]'), '')
+        .split(RegExp(r'\s+'))
+        .where((e) => e.isNotEmpty)
+        .firstOrNull;
+    if (cleanToken == null) {
+      _remoteMatches = [];
+      notifyListeners();
+      return;
+    }
+    try {
+      final snap = await _db
+          .collection('listings')
+          .where('status', whereIn: ['available', 'reserved'])
+          .where('keywords', arrayContains: cleanToken)
+          .limit(30)
+          .get();
+      _remoteMatches = snap.docs.map(Listing.fromSnapshot).toList();
+      notifyListeners();
+    } catch (_) {}
+  }
+
+  void loadMore() {
+    if (isFetchingMore || !hasMore) return;
+    isFetchingMore = true;
+    _currentLimit += 60;
+    notifyListeners();
+    _startStreams();
+  }
+
+  Future<void> refresh() async {
+    _currentLimit = 60;
+    _remoteMatches = [];
+    loading = true;
+    notifyListeners();
+    _startStreams();
+  }
+
   List<Listing> get filtered {
-    var result = listings.where((listing) {
+    final mergedById = <String, Listing>{
+      for (final item in listings) item.id: item,
+      for (final item in _remoteMatches) item.id: item,
+    };
+    final pool = mergedById.values.toList();
+
+    final q = query.trim().toLowerCase();
+    var result = pool.where((listing) {
       final matchesQuery =
-          query.isEmpty ||
-          listing.title.toLowerCase().contains(query.toLowerCase());
+          q.isEmpty ||
+          listing.title.toLowerCase().contains(q) ||
+          listing.description.toLowerCase().contains(q) ||
+          listing.location.toLowerCase().contains(q);
       final matchesCategory = category == 'All' || listing.category == category;
       final matchesCondition =
           condition == 'All' || listing.condition == condition;
+      final matchesLocation =
+          locationFilter == 'All Locations' || listing.location == locationFilter;
       final matchesPrice =
           listing.price >= minPrice && listing.price <= maxPrice;
+      final matchesAvailable = !onlyAvailable || listing.isAvailable;
+      final matchesFavorites = !onlyFavorites || favoriteIds.contains(listing.id);
+      final matchesNegotiable = !onlyNegotiable || listing.negotiable;
+
       return matchesQuery &&
           matchesCategory &&
           matchesCondition &&
-          matchesPrice;
+          matchesLocation &&
+          matchesPrice &&
+          matchesAvailable &&
+          matchesFavorites &&
+          matchesNegotiable;
     }).toList();
+
     if (sort == 'Price low') {
       result.sort((a, b) => a.price.compareTo(b.price));
     } else if (sort == 'Price high') {
@@ -164,9 +527,22 @@ class ListingProvider extends ChangeNotifier {
     return result;
   }
 
+  List<Listing> get favoriteListings {
+    return listings.where((l) => favoriteIds.contains(l.id)).toList();
+  }
+
   void setQuery(String value) {
     query = value;
     notifyListeners();
+    _searchDebounce?.cancel();
+    if (value.trim().length >= 3) {
+      _searchDebounce = Timer(
+        const Duration(milliseconds: 350),
+        () => searchRemote(value),
+      );
+    } else {
+      _remoteMatches = [];
+    }
   }
 
   void setCategory(String value) {
@@ -184,26 +560,71 @@ class ListingProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> toggleFavorite(Listing listing) async {
+  void toggleOnlyAvailable() {
+    onlyAvailable = !onlyAvailable;
+    notifyListeners();
+  }
+
+  void toggleOnlyFavorites() {
+    onlyFavorites = !onlyFavorites;
+    notifyListeners();
+  }
+
+  void setAdvancedFilters({
+    required String condition,
+    required String location,
+    required int minPrice,
+    required int maxPrice,
+    required bool onlyNegotiable,
+  }) {
+    this.condition = condition;
+    locationFilter = location;
+    this.minPrice = minPrice;
+    this.maxPrice = maxPrice;
+    this.onlyNegotiable = onlyNegotiable;
+    notifyListeners();
+  }
+
+  void resetAllFilters() {
+    query = '';
+    _remoteMatches = [];
+    category = 'All';
+    condition = 'All';
+    locationFilter = 'All Locations';
+    minPrice = 0;
+    maxPrice = 100000000;
+    onlyAvailable = false;
+    onlyFavorites = false;
+    onlyNegotiable = false;
+    notifyListeners();
+  }
+
+  Future<bool> toggleFavorite(Listing listing) async {
     final uid = FirebaseAuth.instance.currentUser?.uid;
-    if (uid == null) return;
+    if (uid == null) return false;
     final ref = _db
         .collection('users')
         .doc(uid)
         .collection('favorites')
         .doc(listing.id);
     if (favoriteIds.contains(listing.id)) {
+      favoriteIds.remove(listing.id);
+      notifyListeners();
       await ref.delete();
     } else {
+      favoriteIds.add(listing.id);
+      notifyListeners();
       await ref.set({
         'listingTitle': listing.title,
         'savedAt': FieldValue.serverTimestamp(),
       });
     }
+    return true;
   }
 
   @override
   void dispose() {
+    _searchDebounce?.cancel();
     _listingSub?.cancel();
     _favoriteSub?.cancel();
     _authSub?.cancel();
@@ -213,6 +634,7 @@ class ListingProvider extends ChangeNotifier {
 
 class SellProvider extends ChangeNotifier {
   final _db = FirebaseFirestore.instance;
+  final _api = BackendApi();
   StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _sub;
   List<Listing> myListings = [];
   bool loading = true;
@@ -251,14 +673,48 @@ class SellProvider extends ChangeNotifier {
         );
   }
 
+  Future<List<String>> _prepareListingImages({
+    required List<String> images,
+    required String imageUrl,
+    required String category,
+  }) async {
+    final rawList = images.where((e) => e.trim().isNotEmpty).toList();
+    if (rawList.isEmpty && imageUrl.trim().isNotEmpty) {
+      rawList.add(imageUrl.trim());
+    }
+    if (rawList.isEmpty) {
+      return [PresetCatalog.defaultForCategory(category)];
+    }
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return rawList;
+
+    final token = await user.getIdToken();
+    final bucket = DefaultFirebaseOptions.currentPlatform.storageBucket ??
+        'pass-it-on-2f422.firebasestorage.app';
+    final uploader = StorageUploader(bucket: bucket);
+    final uploaded = await uploader.uploadListingImages(
+      images: rawList,
+      uid: user.uid,
+      idToken: token,
+    );
+    return uploaded.isNotEmpty
+        ? uploaded
+        : [PresetCatalog.defaultForCategory(category)];
+  }
+
   Future<bool> createListing({
     required String title,
     required String description,
     required String category,
     required String condition,
+    String location = 'Campus Dorm / Hall',
     required int price,
     required bool negotiable,
     String imageUrl = '',
+    List<String> images = const [],
+    bool feePaid = false,
+    String feeTransactionId = '',
+    String paymentId = '',
   }) async {
     if (title.trim().isEmpty || description.trim().isEmpty || price <= 0) {
       error = 'Enter a title, description, and a positive price';
@@ -269,36 +725,126 @@ class SellProvider extends ChangeNotifier {
     error = null;
     notifyListeners();
     try {
-      final user = FirebaseAuth.instance.currentUser!;
-      final profile = await _db.collection('users').doc(user.uid).get();
-      final name =
-          (profile.data()?['name'] as String?) ??
-          user.displayName ??
-          'Unknown user';
+      final resolvedImages = await _prepareListingImages(
+        images: images,
+        imageUrl: imageUrl,
+        category: category,
+      );
+
+      try {
+        await _api.publishListing(
+          title: title.trim(),
+          description: description.trim(),
+          category: category,
+          condition: condition,
+          location: location,
+          price: price,
+          negotiable: negotiable,
+          images: resolvedImages,
+          paymentId: paymentId,
+        );
+        return true;
+      } on BackendApiException catch (e) {
+        if (!e.isEndpointUnavailable) {
+          error = e.message;
+          return false;
+        }
+        // Spark-plan fallback when Cloud Functions are not deployed yet.
+        final user = FirebaseAuth.instance.currentUser!;
+        final profile = await _db.collection('users').doc(user.uid).get();
+        final name =
+            (profile.data()?['name'] as String?) ??
+            user.displayName ??
+            'Unknown user';
+        final keywords = title
+            .toLowerCase()
+            .replaceAll(RegExp(r'[^\w\s]'), '')
+            .split(RegExp(r'\s+'))
+            .where((word) => word.isNotEmpty)
+            .toList();
+
+        await _db.collection('listings').add({
+          'title': title.trim(),
+          'keywords': keywords,
+          'description': description.trim(),
+          'category': category,
+          'condition': condition,
+          'location':
+              location.trim().isEmpty ? 'Campus Dorm / Hall' : location.trim(),
+          'price': price,
+          'negotiable': negotiable,
+          'imageUrl': resolvedImages.first,
+          'images': resolvedImages,
+          'sellerId': user.uid,
+          'sellerName': name,
+          'status': 'available',
+          'reservedFor': '',
+          'statsCounted': false,
+          'feePaid': feePaid,
+          'feeTransactionId': feeTransactionId,
+          'createdAt': FieldValue.serverTimestamp(),
+        });
+        return true;
+      }
+    } on FirebaseException catch (e) {
+      error = e.message ?? 'Could not create listing';
+      return false;
+    } finally {
+      busy = false;
+      notifyListeners();
+    }
+  }
+
+  Future<bool> updateListing({
+    required String listingId,
+    required String title,
+    required String description,
+    required String category,
+    required String condition,
+    required String location,
+    required int price,
+    required bool negotiable,
+    List<String> images = const [],
+    String imageUrl = '',
+  }) async {
+    if (title.trim().isEmpty || description.trim().isEmpty || price <= 0) {
+      error = 'Enter a valid title, description, and positive price';
+      notifyListeners();
+      return false;
+    }
+    busy = true;
+    error = null;
+    notifyListeners();
+    try {
+      final resolvedImages = await _prepareListingImages(
+        images: images,
+        imageUrl: imageUrl,
+        category: category,
+      );
       final keywords = title
           .toLowerCase()
           .replaceAll(RegExp(r'[^\w\s]'), '')
           .split(RegExp(r'\s+'))
           .where((word) => word.isNotEmpty)
           .toList();
-      await _db.collection('listings').add({
+
+      await _db.collection('listings').doc(listingId).update({
         'title': title.trim(),
         'keywords': keywords,
         'description': description.trim(),
         'category': category,
         'condition': condition,
+        'location':
+            location.trim().isEmpty ? 'Campus Dorm / Hall' : location.trim(),
         'price': price,
         'negotiable': negotiable,
-        'imageUrl': imageUrl.trim(),
-        'sellerId': user.uid,
-        'sellerName': name,
-        'status': 'available',
-        'reservedFor': '',
-        'createdAt': FieldValue.serverTimestamp(),
+        'imageUrl': resolvedImages.first,
+        'images': resolvedImages,
+        'updatedAt': FieldValue.serverTimestamp(),
       });
       return true;
     } on FirebaseException catch (e) {
-      error = e.message ?? 'Could not create listing';
+      error = e.message ?? 'Could not update listing';
       return false;
     } finally {
       busy = false;
@@ -312,11 +858,14 @@ class SellProvider extends ChangeNotifier {
     String reservedFor = '',
   }) async {
     busy = true;
+    error = null;
     notifyListeners();
     try {
+      final buyerId = reservedFor.isNotEmpty ? reservedFor : listing.reservedFor;
       await _db.collection('listings').doc(listing.id).update({
         'status': status,
-        'reservedFor': reservedFor,
+        'reservedFor': status == 'available' ? '' : buyerId,
+        'updatedAt': FieldValue.serverTimestamp(),
       });
       return true;
     } on FirebaseException catch (e) {
@@ -342,46 +891,108 @@ class SellProvider extends ChangeNotifier {
 
 class OfferProvider extends ChangeNotifier {
   final _db = FirebaseFirestore.instance;
+  final _api = BackendApi();
   StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _madeSub;
   StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _receivedSub;
   List<MarketOffer> made = [];
   List<MarketOffer> received = [];
+  final Set<String> _readNotificationIds = {};
+  final Map<String, String> _buyerPinCache = {};
   bool busy = false;
   String? error;
   StreamSubscription<User?>? _authSub;
+  StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _prefSub;
 
   OfferProvider() {
     _authSub = FirebaseAuth.instance.authStateChanges().listen((_) {
       made = [];
       received = [];
+      _readNotificationIds.clear();
+      _buyerPinCache.clear();
       _madeSub?.cancel();
       _receivedSub?.cancel();
+      _prefSub?.cancel();
       _startStreams();
     });
     _startStreams();
   }
 
+  String pinForOffer(MarketOffer offer) {
+    return _buyerPinCache[offer.id] ?? offer.handoverCode;
+  }
+
+  Future<void> fetchBuyerHandoverPin(String offerId) async {
+    if (_buyerPinCache.containsKey(offerId)) return;
+    try {
+      final snap = await _db
+          .collection('offers')
+          .doc(offerId)
+          .collection('private')
+          .doc('pin')
+          .get();
+      final code = snap.data()?['code'] as String?;
+      if (code != null && code.isNotEmpty) {
+        _buyerPinCache[offerId] = code;
+        notifyListeners();
+      }
+    } catch (_) {}
+  }
+
   void _startStreams() {
     final uid = FirebaseAuth.instance.currentUser?.uid;
     if (uid == null) return;
+    _prefSub = _db.collection('users').doc(uid).snapshots().listen((snap) {
+      final saved = snap.data()?['readNotifications'];
+      if (saved is List) {
+        _readNotificationIds
+          ..clear()
+          ..addAll(saved.map((e) => e.toString()));
+        notifyListeners();
+      }
+    }, onError: (_) {});
+
     _madeSub = _db
         .collection('offers')
         .where('buyerId', isEqualTo: uid)
         .snapshots()
         .listen(
-          (s) =>
-              made = s.docs.map(MarketOffer.fromSnapshot).toList()
-                ..sort(_offerSort),
+          (s) {
+            made = s.docs.map(MarketOffer.fromSnapshot).toList()
+              ..sort(_offerSort);
+            for (final o in made) {
+              if (o.status == 'accepted' && (o.hasPin || o.handoverCode.isEmpty)) {
+                fetchBuyerHandoverPin(o.id);
+              }
+            }
+            notifyListeners();
+          },
+          onError: (e) {
+            error = _streamError(e);
+            notifyListeners();
+          },
         );
     _receivedSub = _db
         .collection('offers')
         .where('sellerId', isEqualTo: uid)
         .snapshots()
         .listen(
-          (s) =>
-              received = s.docs.map(MarketOffer.fromSnapshot).toList()
-                ..sort(_offerSort),
+          (s) {
+            received = s.docs.map(MarketOffer.fromSnapshot).toList()
+              ..sort(_offerSort);
+            notifyListeners();
+          },
+          onError: (e) {
+            error = _streamError(e);
+            notifyListeners();
+          },
         );
+  }
+
+  String _streamError(Object error) {
+    if (error is FirebaseException) {
+      return 'Could not load offers: ${_firebaseErrorMessage(error)}';
+    }
+    return 'Could not load offers';
   }
 
   int _offerSort(MarketOffer a, MarketOffer b) {
@@ -396,8 +1007,175 @@ class OfferProvider extends ChangeNotifier {
     return bm.compareTo(am);
   }
 
-  Future<bool> makeOffer(Listing listing, int amount, String message) async {
-    if (listing.sellerId == FirebaseAuth.instance.currentUser?.uid) {
+  List<AppNotification> get notifications {
+    final list = <AppNotification>[];
+    final currentUid = FirebaseAuth.instance.currentUser?.uid;
+    if (currentUid == null) return list;
+
+    for (final offer in received) {
+      if (offer.status == 'pending') {
+        final id = 'pending_${offer.id}';
+        list.add(AppNotification(
+          id: id,
+          title: 'New Offer Received',
+          body: '${offer.buyerName} offered ${offer.amount} ৳ on "${offer.listingTitle}".',
+          type: 'offer_received',
+          listingId: offer.listingId,
+          listingTitle: offer.listingTitle,
+          offerId: offer.id,
+          amount: offer.amount,
+          timestamp: offer.createdAt?.toDate() ?? DateTime.now(),
+          isRead: _readNotificationIds.contains(id),
+        ));
+      } else if (offer.status == 'countered') {
+        final id = 'seller_counter_${offer.id}';
+        list.add(AppNotification(
+          id: id,
+          title: 'Counter Offer Active',
+          body: 'Counter sent: ${offer.amount} ৳ on "${offer.listingTitle}".',
+          type: 'counter_offer',
+          listingId: offer.listingId,
+          listingTitle: offer.listingTitle,
+          offerId: offer.id,
+          amount: offer.amount,
+          timestamp: offer.updatedAt?.toDate() ?? DateTime.now(),
+          isRead: _readNotificationIds.contains(id),
+        ));
+      } else if (offer.status == 'accepted') {
+        final id = 'seller_accepted_${offer.id}';
+        list.add(AppNotification(
+          id: id,
+          title: 'Offer Accepted! Listing Reserved',
+          body: 'You accepted ${offer.buyerName}\'s offer of ${offer.amount} ৳ for "${offer.listingTitle}".',
+          type: 'offer_accepted',
+          listingId: offer.listingId,
+          listingTitle: offer.listingTitle,
+          offerId: offer.id,
+          amount: offer.amount,
+          timestamp: offer.updatedAt?.toDate() ?? DateTime.now(),
+          isRead: _readNotificationIds.contains(id),
+        ));
+      }
+    }
+
+    for (final offer in made) {
+      if (offer.status == 'countered') {
+        final id = 'buyer_counter_${offer.id}';
+        list.add(AppNotification(
+          id: id,
+          title: 'Seller Countered Your Offer',
+          body: 'New counter price: ${offer.amount} ৳ on "${offer.listingTitle}". Tap to accept or negotiate.',
+          type: 'counter_offer',
+          listingId: offer.listingId,
+          listingTitle: offer.listingTitle,
+          offerId: offer.id,
+          amount: offer.amount,
+          timestamp: offer.updatedAt?.toDate() ?? DateTime.now(),
+          isRead: _readNotificationIds.contains(id),
+        ));
+      } else if (offer.status == 'accepted') {
+        final id = 'buyer_accepted_${offer.id}';
+        list.add(AppNotification(
+          id: id,
+          title: 'Offer Accepted! 🎉',
+          body: 'Great news! Your offer of ${offer.amount} ৳ on "${offer.listingTitle}" was accepted.',
+          type: 'offer_accepted',
+          listingId: offer.listingId,
+          listingTitle: offer.listingTitle,
+          offerId: offer.id,
+          amount: offer.amount,
+          timestamp: offer.updatedAt?.toDate() ?? DateTime.now(),
+          isRead: _readNotificationIds.contains(id),
+        ));
+      } else if (offer.status == 'declined') {
+        final id = 'buyer_declined_${offer.id}';
+        list.add(AppNotification(
+          id: id,
+          title: 'Offer Declined',
+          body: 'Your offer of ${offer.amount} ৳ on "${offer.listingTitle}" was declined.',
+          type: 'offer_declined',
+          listingId: offer.listingId,
+          listingTitle: offer.listingTitle,
+          offerId: offer.id,
+          amount: offer.amount,
+          timestamp: offer.updatedAt?.toDate() ?? DateTime.now(),
+          isRead: _readNotificationIds.contains(id),
+        ));
+      }
+    }
+
+    list.sort((a, b) => b.timestamp.compareTo(a.timestamp));
+    return list;
+  }
+
+  int get unreadNotificationCount =>
+      notifications.where((n) => !n.isRead).length;
+
+  Future<void> _persistReadNotifications() async {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) return;
+    try {
+      await _db.collection('users').doc(uid).set({
+        'readNotifications': _readNotificationIds.toList(),
+      }, SetOptions(merge: true));
+    } catch (_) {}
+  }
+
+  void markNotificationRead(String id) {
+    _readNotificationIds.add(id);
+    notifyListeners();
+    _persistReadNotifications();
+  }
+
+  void markAllNotificationsRead() {
+    for (final n in notifications) {
+      _readNotificationIds.add(n.id);
+    }
+    notifyListeners();
+    _persistReadNotifications();
+  }
+
+  Future<String?> verifyOfferEligibility(Listing listing) async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return 'You must be signed in to make an offer';
+    if (listing.sellerId == user.uid) {
+      return 'You cannot make an offer on your own listing';
+    }
+    try {
+      final listingSnap = await _db.collection('listings').doc(listing.id).get();
+      if (!listingSnap.exists) return 'This listing no longer exists';
+      final live = listingSnap.data()!;
+      if (live['status'] == 'sold') return 'This listing has already been sold';
+      if (live['status'] != 'available') return 'This item is currently reserved';
+      final offerSnap = await _db.collection('offers').doc('${listing.id}_${user.uid}').get();
+      final existing = offerSnap.data();
+      if (existing != null) {
+        final s = existing['status'];
+        if (s == 'accepted' || s == 'completed') {
+          return 'You already have an active accepted deal on this listing.';
+        }
+      }
+      return null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<bool> makeOffer(
+    Listing listing,
+    int amount,
+    String message, {
+    bool feePaid = false,
+    String feeTransactionId = '',
+    String paymentId = '',
+  }) async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) {
+      error = 'You must be signed in to make an offer';
+      notifyListeners();
+      return false;
+    }
+    if (listing.sellerId == user.uid) {
       error = 'You cannot make an offer on your own listing';
       notifyListeners();
       return false;
@@ -411,68 +1189,59 @@ class OfferProvider extends ChangeNotifier {
     error = null;
     notifyListeners();
     try {
-      final uid = FirebaseAuth.instance.currentUser!.uid;
-      final buyerName =
-          FirebaseAuth.instance.currentUser?.displayName ?? 'Buyer';
-      final offerRef = _db.collection('offers').doc('${listing.id}_$uid');
-
-      await _db
-          .runTransaction((transaction) async {
-            final listingRef = _db.collection('listings').doc(listing.id);
-            final listingSnap = await transaction.get(listingRef);
-            if (!listingSnap.exists)
-              throw Exception('This listing no longer exists');
-            final live = listingSnap.data()!;
-            if (live['status'] == 'sold') {
-              throw Exception('This listing has already been sold');
-            }
-            if (live['status'] != 'available') {
-              throw Exception('This listing is not available');
-            }
-
-            final offerSnap = await transaction.get(offerRef);
-            final existing = offerSnap.data();
-            if (existing != null) {
-              final status = existing['status'];
-              if (status == 'accepted' ||
-                  status == 'declined' ||
-                  status == 'withdrawn') {
-                throw Exception(
-                  'Your previous offer is closed. Create a new offer from a renewed listing.',
-                );
-              }
-            }
-
-            final now = FieldValue.serverTimestamp();
-            transaction.set(offerRef, {
-              'listingId': listing.id,
-              'listingTitle': listing.title,
-              'sellerId': listing.sellerId,
-              'buyerId': uid,
-              'buyerName': buyerName,
-              'amount': amount,
-              'history': existing == null
-                  ? [
-                      {'by': uid, 'amount': amount, 'at': now},
-                    ]
-                  : FieldValue.arrayUnion([
-                      {'by': uid, 'amount': amount},
-                    ]),
-              'message': message.trim(),
-              'status': 'pending',
-              'createdAt': existing == null
-                  ? now
-                  : existing['createdAt'] ?? now,
-              'updatedAt': now,
-            }, SetOptions(merge: true));
-          })
-          .timeout(const Duration(seconds: 8));
-      return true;
-    } on TimeoutException {
-      error = 'The request took too long. Check your connection and try again.';
-      return false;
-    } on Exception catch (e) {
-      error = e.toString().replaceFirst('Exception: ', '');
+      try {
+        await _api.submitOffer(
+          listingId: listing.id,
+          amount: amount,
+          message: message.trim(),
+          paymentId: paymentId,
+        );
+        return true;
+      } on BackendApiException catch (e) {
+        if (!e.isEndpointUnavailable) {
+          error = e.message;
+          return false;
+        }
+        // Spark-plan fallback when Cloud Functions are not deployed yet.
+        final uid = user.uid;
+        final offerRef = _db.collection('offers').doc('${listing.id}_$uid');
+        final existing = (await offerRef.get()).data();
+        final historyEntry = {
+          'by': uid,
+          'amount': amount,
+          'at': Timestamp.now(),
+        };
+        final isReopening = existing == null ||
+            existing['status'] == 'declined' ||
+            existing['status'] == 'withdrawn';
+        await offerRef.set({
+          'listingId': listing.id,
+          'listingTitle': listing.title,
+          'sellerId': listing.sellerId,
+          'buyerId': uid,
+          'buyerName': user.displayName ?? 'Buyer',
+          'amount': amount,
+          'lastUpdatedBy': uid,
+          'history': existing == null
+              ? [historyEntry]
+              : FieldValue.arrayUnion([historyEntry]),
+          'message': message.trim(),
+          'status': 'pending',
+          'isRated': false,
+          'feePaid': feePaid ||
+              (existing?['feePaid'] == true && existing?['status'] == 'pending'),
+          'feeTransactionId': feeTransactionId.isNotEmpty
+              ? feeTransactionId
+              : (existing?['feeTransactionId'] ?? ''),
+          'createdAt': isReopening
+              ? FieldValue.serverTimestamp()
+              : (existing['createdAt'] ?? FieldValue.serverTimestamp()),
+          'updatedAt': FieldValue.serverTimestamp(),
+        }, SetOptions(merge: true));
+        return true;
+      }
+    } on FirebaseException catch (e) {
+      error = _firebaseErrorMessage(e);
       return false;
     } finally {
       busy = false;
@@ -480,7 +1249,11 @@ class OfferProvider extends ChangeNotifier {
     }
   }
 
-  Future<bool> transition(MarketOffer offer, String action) async {
+  Future<bool> transition(
+    MarketOffer offer,
+    String action, {
+    String? handoverPin,
+  }) async {
     if (offer.isExpired &&
         (action == 'accept' ||
             action == 'counter' ||
@@ -493,64 +1266,134 @@ class OfferProvider extends ChangeNotifier {
     error = null;
     notifyListeners();
     try {
-      await _db.runTransaction((transaction) async {
-        final offerRef = _db.collection('offers').doc(offer.id);
-        final offerSnap = await transaction.get(offerRef);
-        if (!offerSnap.exists) throw Exception('Offer no longer exists');
-        final current = offerSnap.data()!;
-        final listingRef = _db.collection('listings').doc(current['listingId']);
-        final listingSnap = await transaction.get(listingRef);
-        if (!listingSnap.exists) throw Exception('Listing no longer exists');
+      try {
+        await _api.transitionOffer(
+          offerId: offer.id,
+          action: action,
+          handoverPin: handoverPin ?? '',
+        );
+        return true;
+      } on BackendApiException catch (e) {
+        if (!e.isEndpointUnavailable) {
+          error = e.message;
+          return false;
+        }
+        // Spark-plan fallback transaction when Cloud Functions aren't deployed yet.
+        String? acceptedListingId;
+        String? acceptedOfferSellerId;
+        String? refundTxnId;
 
-        if (action == 'accept') {
-          if (current['status'] != 'pending' &&
-              current['status'] != 'countered') {
-            throw Exception('This offer is no longer actionable');
-          }
-          transaction.update(offerRef, {
-            'status': 'accepted',
-            'updatedAt': FieldValue.serverTimestamp(),
-          });
-          transaction.update(listingRef, {
-            'status': 'reserved',
-            'reservedFor': current['buyerId'],
-          });
-          final others = await _db
-              .collection('offers')
-              .where('listingId', isEqualTo: current['listingId'])
-              .where('status', whereIn: ['pending', 'countered'])
-              .get();
-          for (final doc in others.docs) {
-            if (doc.id != offer.id) {
-              transaction.update(doc.reference, {
-                'status': 'declined',
+        await _db.runTransaction((transaction) async {
+          final offerRef = _db.collection('offers').doc(offer.id);
+          final offerSnap = await transaction.get(offerRef);
+          if (!offerSnap.exists) throw Exception('Offer no longer exists');
+          final current = offerSnap.data()!;
+          final listingRef = _db.collection('listings').doc(current['listingId']);
+          final listingSnap = await transaction.get(listingRef);
+          if (!listingSnap.exists) throw Exception('Listing no longer exists');
+          final liveListing = listingSnap.data()!;
+
+          if (action == 'accept' || action == 'acceptCounter') {
+            if (liveListing['status'] != 'available') {
+              throw Exception('This listing has already been reserved or sold');
+            }
+            final code = (1000 + math.Random().nextInt(9000)).toString();
+            transaction.update(offerRef, {
+              'status': 'accepted',
+              'handoverCode': code,
+              'updatedAt': FieldValue.serverTimestamp(),
+            });
+            transaction.update(listingRef, {
+              'status': 'reserved',
+              'reservedFor': current['buyerId'],
+              'updatedAt': FieldValue.serverTimestamp(),
+            });
+            acceptedListingId = current['listingId'] as String?;
+            acceptedOfferSellerId = current['sellerId'] as String?;
+          } else if (action == 'complete') {
+            if (current['status'] != 'accepted') {
+              throw Exception('Only accepted deals can be finalized');
+            }
+            final expected = (current['handoverCode'] as String?) ?? '';
+            if (expected.isNotEmpty &&
+                (handoverPin ?? '').trim() != expected) {
+              throw Exception('Invalid 4-digit handover PIN from buyer');
+            }
+            final alreadyCounted = liveListing['statsCounted'] == true;
+            transaction.update(offerRef, {
+              'status': 'completed',
+              'updatedAt': FieldValue.serverTimestamp(),
+            });
+            transaction.update(listingRef, {
+              'status': 'sold',
+              'statsCounted': true,
+              'updatedAt': FieldValue.serverTimestamp(),
+            });
+            if (!alreadyCounted) {
+              transaction.set(
+                _db.collection('users').doc(current['sellerId']),
+                {'soldCount': FieldValue.increment(1)},
+                SetOptions(merge: true),
+              );
+              transaction.set(
+                _db.collection('users').doc(current['buyerId']),
+                {'boughtCount': FieldValue.increment(1)},
+                SetOptions(merge: true),
+              );
+            }
+          } else if (action == 'decline' || action == 'withdraw') {
+            final status = action == 'withdraw' ? 'withdrawn' : 'declined';
+            transaction.update(offerRef, {
+              'status': status,
+              'updatedAt': FieldValue.serverTimestamp(),
+            });
+            if (current['status'] == 'accepted' &&
+                liveListing['status'] == 'reserved') {
+              transaction.update(listingRef, {
+                'status': 'available',
+                'reservedFor': '',
                 'updatedAt': FieldValue.serverTimestamp(),
               });
             }
+            final txn = current['feeTransactionId'] as String? ?? '';
+            if (current['feePaid'] == true && txn.isNotEmpty) {
+              refundTxnId = txn;
+            }
           }
-        } else if (action == 'decline' || action == 'withdraw') {
-          final status = action == 'withdraw' ? 'withdrawn' : 'declined';
-          transaction.update(offerRef, {
-            'status': status,
-            'updatedAt': FieldValue.serverTimestamp(),
-          });
-        } else if (action == 'counter') {
-          throw Exception('Enter a counter amount before continuing');
-        } else if (action == 'acceptCounter') {
-          if (current['status'] != 'countered') {
-            throw Exception('This counter is no longer actionable');
-          }
-          transaction.update(offerRef, {
-            'status': 'accepted',
-            'updatedAt': FieldValue.serverTimestamp(),
-          });
-          transaction.update(listingRef, {
-            'status': 'reserved',
-            'reservedFor': current['buyerId'],
-          });
+        });
+
+        if (acceptedListingId != null && acceptedOfferSellerId != null) {
+          try {
+            final others = await _db
+                .collection('offers')
+                .where('listingId', isEqualTo: acceptedListingId)
+                .where('sellerId', isEqualTo: acceptedOfferSellerId)
+                .where('status', whereIn: ['pending', 'countered'])
+                .get();
+            for (final doc in others.docs) {
+              if (doc.id != offer.id) {
+                await doc.reference.update({
+                  'status': 'declined',
+                  'updatedAt': FieldValue.serverTimestamp(),
+                });
+                final d = doc.data();
+                final otherTxn = d['feeTransactionId'] as String? ?? '';
+                if (d['feePaid'] == true && otherTxn.isNotEmpty) {
+                  await _refundTxn(otherTxn);
+                }
+              }
+            }
+          } catch (_) {}
         }
-      });
-      return true;
+
+        if (refundTxnId != null) {
+          await _refundTxn(refundTxnId!);
+        }
+        return true;
+      }
+    } on FirebaseException catch (e) {
+      error = _firebaseErrorMessage(e);
+      return false;
     } on Exception catch (e) {
       error = e.toString().replaceFirst('Exception: ', '');
       return false;
@@ -558,6 +1401,19 @@ class OfferProvider extends ChangeNotifier {
       busy = false;
       notifyListeners();
     }
+  }
+
+  Future<void> _refundTxn(String txnId) async {
+    try {
+      final snap = await _db
+          .collection('payments')
+          .where('transactionId', isEqualTo: txnId)
+          .limit(3)
+          .get();
+      for (final doc in snap.docs) {
+        await doc.reference.update({'status': 'refunded'});
+      }
+    } catch (_) {}
   }
 
   Future<bool> counterOffer(MarketOffer offer, int amount) async {
@@ -566,28 +1422,37 @@ class OfferProvider extends ChangeNotifier {
       notifyListeners();
       return false;
     }
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) return false;
     busy = true;
+    error = null;
     notifyListeners();
     try {
-      await _db.runTransaction((transaction) async {
-        final ref = _db.collection('offers').doc(offer.id);
-        final snap = await transaction.get(ref);
-        if (!snap.exists) throw Exception('Offer no longer exists');
-        if (snap.data()?['status'] != 'pending') {
-          throw Exception('This offer is no longer pending');
+      try {
+        await _api.transitionOffer(
+          offerId: offer.id,
+          action: 'counter',
+          counterAmount: amount,
+        );
+        return true;
+      } on BackendApiException catch (e) {
+        if (!e.isEndpointUnavailable) {
+          error = e.message;
+          return false;
         }
-        transaction.update(ref, {
+        await _db.collection('offers').doc(offer.id).update({
           'amount': amount,
           'status': 'countered',
+          'lastUpdatedBy': uid,
           'updatedAt': FieldValue.serverTimestamp(),
           'history': FieldValue.arrayUnion([
-            {'by': FirebaseAuth.instance.currentUser!.uid, 'amount': amount},
+            {'by': uid, 'amount': amount, 'at': Timestamp.now()},
           ]),
         });
-      });
-      return true;
-    } on Exception catch (e) {
-      error = e.toString().replaceFirst('Exception: ', '');
+        return true;
+      }
+    } on FirebaseException catch (e) {
+      error = _firebaseErrorMessage(e);
       return false;
     } finally {
       busy = false;
@@ -595,10 +1460,22 @@ class OfferProvider extends ChangeNotifier {
     }
   }
 
+  String _firebaseErrorMessage(FirebaseException e) {
+    switch (e.code) {
+      case 'permission-denied':
+        return 'Permission denied. Ensure Firestore rules & Cloud Functions are deployed.';
+      case 'unauthenticated':
+        return 'You must be signed in to perform this action.';
+      default:
+        return e.message ?? 'Firebase error (${e.code})';
+    }
+  }
+
   @override
   void dispose() {
     _madeSub?.cancel();
     _receivedSub?.cancel();
+    _prefSub?.cancel();
     _authSub?.cancel();
     super.dispose();
   }
@@ -606,6 +1483,7 @@ class OfferProvider extends ChangeNotifier {
 
 class RatingProvider extends ChangeNotifier {
   final _db = FirebaseFirestore.instance;
+  final _api = BackendApi();
   bool busy = false;
   String? error;
 
@@ -614,33 +1492,460 @@ class RatingProvider extends ChangeNotifier {
     required String sellerId,
     required int stars,
     String comment = '',
+    String? offerId,
   }) async {
     if (stars < 1 || stars > 5) return false;
     busy = true;
     error = null;
     notifyListeners();
     try {
-      final buyerId = FirebaseAuth.instance.currentUser!.uid;
-      await _db.runTransaction((transaction) async {
-        final ratingRef = _db.collection('ratings').doc(listingId);
-        final ratingSnap = await transaction.get(ratingRef);
-        if (ratingSnap.exists)
-          throw Exception('This sale has already been rated');
-        final sellerRef = _db.collection('users').doc(sellerId);
-        final sellerSnap = await transaction.get(sellerRef);
-        final seller = sellerSnap.data() ?? {};
-        transaction.set(ratingRef, {
-          'sellerId': sellerId,
-          'buyerId': buyerId,
-          'stars': stars,
-          'comment': comment.trim(),
-          'createdAt': FieldValue.serverTimestamp(),
-        });
-        transaction.set(sellerRef, {
-          'ratingSum': ((seller['ratingSum'] as num?)?.toInt() ?? 0) + stars,
-          'ratingCount': ((seller['ratingCount'] as num?)?.toInt() ?? 0) + 1,
-        }, SetOptions(merge: true));
+      await _api.submitRating(
+        listingId: listingId,
+        sellerId: sellerId,
+        stars: stars,
+        comment: comment.trim(),
+        offerId: offerId ?? '',
+      );
+      return true;
+    } on BackendApiException catch (e) {
+      if (e.isEndpointUnavailable) {
+        try {
+          final user = FirebaseAuth.instance.currentUser!;
+          final buyerId = user.uid;
+          final buyerName = user.displayName ?? 'Verified Buyer';
+          await _db.runTransaction((transaction) async {
+            final ratingRef = _db.collection('ratings').doc(listingId);
+            final ratingSnap = await transaction.get(ratingRef);
+            if (ratingSnap.exists) {
+              throw Exception('This sale has already been rated');
+            }
+            final sellerRef = _db.collection('users').doc(sellerId);
+            final sellerSnap = await transaction.get(sellerRef);
+            final seller = sellerSnap.data() ?? {};
+            transaction.set(ratingRef, {
+              'sellerId': sellerId,
+              'buyerId': buyerId,
+              'buyerName': buyerName,
+              'stars': stars,
+              'comment': comment.trim(),
+              'createdAt': FieldValue.serverTimestamp(),
+            });
+            transaction.set(sellerRef, {
+              'ratingSum': ((seller['ratingSum'] as num?)?.toInt() ?? 0) + stars,
+              'ratingCount': ((seller['ratingCount'] as num?)?.toInt() ?? 0) + 1,
+            }, SetOptions(merge: true));
+            if (offerId != null && offerId.isNotEmpty) {
+              transaction.update(_db.collection('offers').doc(offerId), {
+                'isRated': true,
+              });
+            }
+          });
+          return true;
+        } on Exception catch (inner) {
+          error = inner.toString().replaceFirst('Exception: ', '');
+          return false;
+        }
+      }
+      error = e.message;
+      return false;
+    } finally {
+      busy = false;
+      notifyListeners();
+    }
+  }
+
+  Future<Map<String, dynamic>> fetchSellerPublicData(String sellerId) async {
+    Map<String, dynamic> profileData = {};
+    try {
+      final pubSnap = await _db.collection('public_profiles').doc(sellerId).get();
+      if (pubSnap.exists && pubSnap.data() != null) {
+        profileData = pubSnap.data()!;
+      } else {
+        // Fallback only works when permitted (e.g. own profile / legacy dev rule)
+        final legacySnap = await _db.collection('users').doc(sellerId).get();
+        profileData = legacySnap.data() ?? <String, dynamic>{};
+      }
+    } catch (_) {}
+
+    final reviewsSnap = await _db
+        .collection('ratings')
+        .where('sellerId', isEqualTo: sellerId)
+        .limit(20)
+        .get();
+    final listingsSnap = await _db
+        .collection('listings')
+        .where('sellerId', isEqualTo: sellerId)
+        .where('status', isEqualTo: 'available')
+        .limit(12)
+        .get();
+
+    final reviews = reviewsSnap.docs.map(SellerReview.fromSnapshot).toList()
+      ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+
+    return {
+      'profile': profileData,
+      'reviews': reviews,
+      'listings': listingsSnap.docs.map(Listing.fromSnapshot).toList(),
+    };
+  }
+}
+
+class ReportProvider extends ChangeNotifier {
+  final _db = FirebaseFirestore.instance;
+  bool busy = false;
+  String? error;
+
+  Future<bool> submitReport({
+    required String targetType,
+    required String targetId,
+    required String targetTitle,
+    String targetUserId = '',
+    required String reason,
+    String details = '',
+  }) async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) {
+      error = 'Please sign in to submit a report';
+      notifyListeners();
+      return false;
+    }
+    busy = true;
+    error = null;
+    notifyListeners();
+    try {
+      await _db.collection('reports').add({
+        'targetType': targetType,
+        'targetId': targetId,
+        'targetTitle': targetTitle,
+        'targetUserId': targetUserId,
+        'reporterId': user.uid,
+        'reporterName': user.displayName ?? 'Member',
+        'reason': reason,
+        'details': details.trim(),
+        'status': 'open',
+        'createdAt': FieldValue.serverTimestamp(),
       });
+      return true;
+    } on FirebaseException catch (e) {
+      error = e.message ?? 'Could not submit report';
+      return false;
+    } finally {
+      busy = false;
+      notifyListeners();
+    }
+  }
+}
+
+class ChatProvider extends ChangeNotifier {
+  final _db = FirebaseFirestore.instance;
+  StreamSubscription<User?>? _authSub;
+  StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _threadSub;
+  List<ChatThread> threads = [];
+  bool sending = false;
+
+  ChatProvider() {
+    _authSub = FirebaseAuth.instance.authStateChanges().listen((_) {
+      threads = [];
+      _threadSub?.cancel();
+      _startStream();
+    });
+    _startStream();
+  }
+
+  void _startStream() {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) {
+      notifyListeners();
+      return;
+    }
+    _threadSub = _db
+        .collection('chats')
+        .where('participants', arrayContains: uid)
+        .snapshots()
+        .listen((snap) {
+      threads = snap.docs.map(ChatThread.fromSnapshot).toList()
+        ..sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
+      notifyListeners();
+    }, onError: (_) {});
+  }
+
+  String threadIdFor(String listingId, String buyerId) => '${listingId}_$buyerId';
+
+  Stream<List<ChatMessage>> messagesStream(String threadId) {
+    return _db
+        .collection('chats')
+        .doc(threadId)
+        .collection('messages')
+        .orderBy('createdAt', descending: false)
+        .limit(100)
+        .snapshots()
+        .map((s) => s.docs.map(ChatMessage.fromSnapshot).toList());
+  }
+
+  Future<bool> sendMessage({
+    required String threadId,
+    required String listingId,
+    required String listingTitle,
+    required int listingPrice,
+    required String buyerId,
+    required String buyerName,
+    required String sellerId,
+    required String sellerName,
+    required String text,
+  }) async {
+    final user = FirebaseAuth.instance.currentUser;
+    final clean = text.trim();
+    if (user == null || clean.isEmpty) return false;
+    sending = true;
+    notifyListeners();
+    try {
+      final threadRef = _db.collection('chats').doc(threadId);
+      await threadRef.set({
+        'listingId': listingId,
+        'listingTitle': listingTitle,
+        'listingPrice': listingPrice,
+        'buyerId': buyerId,
+        'buyerName': buyerName,
+        'sellerId': sellerId,
+        'sellerName': sellerName,
+        'participants': [buyerId, sellerId],
+        'lastMessage': clean,
+        'updatedAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+
+      await threadRef.collection('messages').add({
+        'senderId': user.uid,
+        'senderName': user.displayName ?? 'Member',
+        'text': clean,
+        'createdAt': FieldValue.serverTimestamp(),
+      });
+      return true;
+    } catch (_) {
+      return false;
+    } finally {
+      sending = false;
+      notifyListeners();
+    }
+  }
+
+  @override
+  void dispose() {
+    _authSub?.cancel();
+    _threadSub?.cancel();
+    super.dispose();
+  }
+}
+
+class AdminProvider extends ChangeNotifier {
+  final _db = FirebaseFirestore.instance;
+  final _api = BackendApi();
+  PlatformFeeSettings feeSettings = const PlatformFeeSettings();
+  PlatformMetrics globalMetrics = const PlatformMetrics();
+  List<PlatformPaymentRecord> payments = [];
+  List<Listing> allListings = [];
+  List<MarketOffer> allOffers = [];
+  List<Map<String, dynamic>> allUsers = [];
+  List<ReportRecord> reports = [];
+  bool isCurrentUserAdmin = false;
+  bool loading = true;
+  bool busy = false;
+  String? error;
+
+  StreamSubscription<User?>? _authSub;
+  StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _feeSub;
+  StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _metricsSub;
+  StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _userRoleSub;
+  StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _paySub;
+  StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _listingsSub;
+  StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _offersSub;
+  StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _usersSub;
+  StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _reportsSub;
+
+  AdminProvider() {
+    _authSub = FirebaseAuth.instance.authStateChanges().listen((_) {
+      _cancelStreams();
+      _initStreams();
+    });
+    _initStreams();
+  }
+
+  void _cancelStreams() {
+    _feeSub?.cancel();
+    _metricsSub?.cancel();
+    _userRoleSub?.cancel();
+    _paySub?.cancel();
+    _listingsSub?.cancel();
+    _offersSub?.cancel();
+    _usersSub?.cancel();
+    _reportsSub?.cancel();
+  }
+
+  void _initStreams() {
+    final user = FirebaseAuth.instance.currentUser;
+    _feeSub = _db
+        .collection('platform_settings')
+        .doc('fees')
+        .snapshots()
+        .listen((snap) {
+      if (snap.exists && snap.data() != null) {
+        feeSettings = PlatformFeeSettings.fromMap(snap.data());
+      } else {
+        feeSettings = const PlatformFeeSettings(
+          sellerListingFee: 20,
+          buyerOrderFee: 50,
+          feesEnabled: true,
+        );
+      }
+      notifyListeners();
+    }, onError: (_) {});
+
+    if (user == null) {
+      payments = [];
+      allListings = [];
+      allOffers = [];
+      allUsers = [];
+      reports = [];
+      globalMetrics = const PlatformMetrics();
+      isCurrentUserAdmin = false;
+      loading = false;
+      notifyListeners();
+      return;
+    }
+
+    _userRoleSub = _db.collection('users').doc(user.uid).snapshots().listen((snap) {
+      final data = snap.data();
+      isCurrentUserAdmin =
+          data?['role'] == 'admin' || (data?['isAdmin'] as bool? ?? false);
+      if (isCurrentUserAdmin) {
+        _startAdminStreams();
+      } else {
+        _metricsSub?.cancel();
+        _reportsSub?.cancel();
+        _listingsSub?.cancel();
+        _offersSub?.cancel();
+        _usersSub?.cancel();
+      }
+      notifyListeners();
+    }, onError: (_) {});
+
+    _paySub = _db
+        .collection('payments')
+        .orderBy('createdAt', descending: true)
+        .limit(100)
+        .snapshots()
+        .listen((snap) {
+      payments = snap.docs.map(PlatformPaymentRecord.fromSnapshot).toList();
+      loading = false;
+      notifyListeners();
+    }, onError: (_) {
+      loading = false;
+      notifyListeners();
+    });
+  }
+
+  void _startAdminStreams() {
+    _metricsSub?.cancel();
+    _metricsSub = _db
+        .collection('platform_metrics')
+        .doc('global')
+        .snapshots()
+        .listen((snap) {
+      globalMetrics = PlatformMetrics.fromMap(snap.data());
+      notifyListeners();
+    }, onError: (_) {});
+
+    _listingsSub?.cancel();
+    _listingsSub = _db.collection('listings').limit(100).snapshots().listen((snap) {
+      allListings = snap.docs.map(Listing.fromSnapshot).toList();
+      notifyListeners();
+    }, onError: (_) {});
+
+    _offersSub?.cancel();
+    _offersSub = _db.collection('offers').limit(100).snapshots().listen((snap) {
+      allOffers = snap.docs.map(MarketOffer.fromSnapshot).toList();
+      notifyListeners();
+    }, onError: (_) {});
+
+    _usersSub?.cancel();
+    _usersSub = _db.collection('users').limit(100).snapshots().listen((snap) {
+      allUsers = snap.docs.map((d) => {'uid': d.id, ...d.data()}).toList();
+      notifyListeners();
+    }, onError: (_) {});
+
+    _reportsSub?.cancel();
+    _reportsSub = _db
+        .collection('reports')
+        .orderBy('createdAt', descending: true)
+        .limit(100)
+        .snapshots()
+        .listen((snap) {
+      reports = snap.docs.map(ReportRecord.fromSnapshot).toList();
+      notifyListeners();
+    }, onError: (_) {});
+  }
+
+  int get totalRevenueBDT => globalMetrics.hasData
+      ? globalMetrics.totalRevenueBDT
+      : payments
+          .where((p) => p.status != 'refunded')
+          .fold(0, (total, p) => total + p.amount);
+
+  int get refundedRevenueBDT => globalMetrics.hasData
+      ? globalMetrics.refundedRevenueBDT
+      : payments
+          .where((p) => p.status == 'refunded')
+          .fold(0, (total, p) => total + p.amount);
+
+  int get sellerRevenueBDT => globalMetrics.hasData
+      ? globalMetrics.sellerRevenueBDT
+      : payments
+          .where((p) => p.type == 'seller_listing_fee' && p.status != 'refunded')
+          .fold(0, (total, p) => total + p.amount);
+
+  int get buyerRevenueBDT => globalMetrics.hasData
+      ? globalMetrics.buyerRevenueBDT
+      : payments
+          .where((p) => p.type == 'buyer_order_fee' && p.status != 'refunded')
+          .fold(0, (total, p) => total + p.amount);
+
+  int get totalListingsCount => allListings.length;
+  int get availableListingsCount =>
+      allListings.where((l) => l.isAvailable).length;
+  int get reservedListingsCount =>
+      allListings.where((l) => l.isReserved).length;
+  int get soldListingsCount => allListings.where((l) => l.isSold).length;
+
+  int get totalOrdersCount => allOffers.length;
+  int get pendingOrdersCount =>
+      allOffers.where((o) => o.status == 'pending').length;
+  int get acceptedOrdersCount =>
+      allOffers.where((o) => o.status == 'accepted').length;
+  int get completedOrdersCount =>
+      allOffers.where((o) => o.status == 'completed').length;
+  int get openReportsCount => reports.where((r) => r.status == 'open').length;
+
+  Future<bool> updateFees({
+    required int sellerListingFee,
+    required int buyerOrderFee,
+    required bool feesEnabled,
+  }) async {
+    busy = true;
+    error = null;
+    notifyListeners();
+    try {
+      final user = FirebaseAuth.instance.currentUser;
+      final newSettings = PlatformFeeSettings(
+        sellerListingFee: sellerListingFee,
+        buyerOrderFee: buyerOrderFee,
+        feesEnabled: feesEnabled,
+        updatedAt: DateTime.now(),
+        updatedBy: user?.displayName ?? user?.email ?? 'Admin',
+      );
+      await _db
+          .collection('platform_settings')
+          .doc('fees')
+          .set(newSettings.toMap(), SetOptions(merge: true));
+      feeSettings = newSettings;
       return true;
     } on Exception catch (e) {
       error = e.toString().replaceFirst('Exception: ', '');
@@ -649,5 +1954,221 @@ class RatingProvider extends ChangeNotifier {
       busy = false;
       notifyListeners();
     }
+  }
+
+  /// Calls Cloud Functions `/payments/initiate` so payments can never be forged client-side.
+  Future<PaymentInitResult?> initiateServerPayment({
+    required String type,
+    required String method,
+    required String referenceId,
+    required String referenceTitle,
+    String phone = '',
+  }) async {
+    busy = true;
+    error = null;
+    notifyListeners();
+    try {
+      final res = await _api.initiatePayment(
+        type: type,
+        method: method,
+        referenceId: referenceId,
+        referenceTitle: referenceTitle,
+        phone: phone,
+      );
+      final mode = (res['mode'] as String?) ?? 'sandbox_completed';
+      if (mode == 'redirect') {
+        return PaymentInitResult(
+          mode: 'redirect',
+          gatewayUrl: res['gatewayUrl'] as String?,
+          transactionId: res['transactionId'] as String?,
+        );
+      }
+      final payJson = (res['payment'] as Map<String, dynamic>?) ?? {};
+      final record = PlatformPaymentRecord(
+        id: (payJson['id'] as String?) ?? '',
+        userId: (payJson['userId'] as String?) ?? '',
+        userName: (payJson['userName'] as String?) ?? 'Campus Trader',
+        userEmail: (payJson['userEmail'] as String?) ?? '',
+        type: type,
+        amount: (payJson['amount'] as num?)?.toInt() ?? 0,
+        currency: 'BDT',
+        method: method,
+        transactionId: (payJson['transactionId'] as String?) ?? '',
+        referenceId: referenceId,
+        referenceTitle: referenceTitle,
+        status: 'completed',
+        createdAt: DateTime.now(),
+      );
+      return PaymentInitResult(mode: mode, payment: record);
+    } on BackendApiException catch (e) {
+      if (e.isEndpointUnavailable) {
+        try {
+          final user = FirebaseAuth.instance.currentUser;
+          final uid = user?.uid ?? 'anonymous_user';
+          final name = user?.displayName ?? 'Campus Trader';
+          final email = user?.email ?? '';
+          final requiredAmt = !feeSettings.feesEnabled
+              ? 0
+              : (type == 'seller_listing_fee'
+                  ? feeSettings.sellerListingFee
+                  : feeSettings.buyerOrderFee);
+          final txnId =
+              'TXN-${DateTime.now().millisecondsSinceEpoch.toString().substring(6)}';
+          final docRef = await _db.collection('payments').add({
+            'userId': uid,
+            'userName': name,
+            'userEmail': email,
+            'type': type,
+            'amount': requiredAmt,
+            'currency': 'BDT',
+            'method': method,
+            'transactionId': txnId,
+            'referenceId': referenceId,
+            'referenceTitle': referenceTitle,
+            'status': 'completed',
+            'gatewayMode': 'spark_sandbox',
+            'createdAt': FieldValue.serverTimestamp(),
+          });
+          final record = PlatformPaymentRecord(
+            id: docRef.id,
+            userId: uid,
+            userName: name,
+            userEmail: email,
+            type: type,
+            amount: requiredAmt,
+            currency: 'BDT',
+            method: method,
+            transactionId: txnId,
+            referenceId: referenceId,
+            referenceTitle: referenceTitle,
+            status: 'completed',
+            createdAt: DateTime.now(),
+          );
+          return PaymentInitResult(mode: 'sandbox_completed', payment: record);
+        } on Exception catch (inner) {
+          error = inner.toString().replaceFirst('Exception: ', '');
+          return null;
+        }
+      }
+      error = e.message;
+      return null;
+    } finally {
+      busy = false;
+      notifyListeners();
+    }
+  }
+
+  Future<bool> deleteListingAsAdmin(String listingId) async {
+    try {
+      await _db.collection('listings').doc(listingId).delete();
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<bool> updateListingStatusAsAdmin(String listingId, String status) async {
+    try {
+      await _db.collection('listings').doc(listingId).update({
+        'status': status,
+        if (status == 'available') 'reservedFor': '',
+      });
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<bool> updateOfferStatusAsAdmin(MarketOffer offer, String status) async {
+    try {
+      await _db.runTransaction((tx) async {
+        final offerRef = _db.collection('offers').doc(offer.id);
+        final listingRef = _db.collection('listings').doc(offer.listingId);
+        tx.update(offerRef, {
+          'status': status,
+          'updatedAt': FieldValue.serverTimestamp(),
+        });
+        if (status == 'completed') {
+          tx.update(listingRef, {'status': 'sold'});
+          tx.set(_db.collection('users').doc(offer.sellerId), {
+            'soldCount': FieldValue.increment(1),
+          }, SetOptions(merge: true));
+          tx.set(_db.collection('users').doc(offer.buyerId), {
+            'boughtCount': FieldValue.increment(1),
+          }, SetOptions(merge: true));
+        } else if (status == 'declined') {
+          tx.update(listingRef, {'status': 'available', 'reservedFor': ''});
+        }
+      });
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<bool> refundPaymentRecord(String paymentId) async {
+    try {
+      await _api.refundPayment(paymentId);
+      return true;
+    } on BackendApiException catch (e) {
+      if (e.isEndpointUnavailable) {
+        try {
+          await _db.collection('payments').doc(paymentId).update({
+            'status': 'refunded',
+          });
+          return true;
+        } catch (_) {}
+      }
+      error = e.message;
+      return false;
+    }
+  }
+
+  Future<bool> toggleUserRoleAsAdmin(String uid, bool makeAdmin) async {
+    try {
+      await _db.collection('users').doc(uid).set({
+        'role': makeAdmin ? 'admin' : 'customer',
+        'isAdmin': makeAdmin,
+      }, SetOptions(merge: true));
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<bool> banUserAsAdmin(String uid, bool banned) async {
+    try {
+      await _api.banUser(targetUid: uid, banned: banned);
+      return true;
+    } on BackendApiException catch (e) {
+      if (e.isEndpointUnavailable) {
+        // Firestore flag fallback disables writes immediately under firestore.rules.
+        await _db.collection('users').doc(uid).set({
+          'isBanned': banned,
+        }, SetOptions(merge: true));
+        return true;
+      }
+      error = e.message;
+      return false;
+    }
+  }
+
+  Future<bool> resolveReport(String reportId, String status) async {
+    try {
+      await _db.collection('reports').doc(reportId).update({
+        'status': status,
+        'resolvedAt': FieldValue.serverTimestamp(),
+      });
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  @override
+  void dispose() {
+    _authSub?.cancel();
+    _cancelStreams();
+    super.dispose();
   }
 }

@@ -1,5 +1,5 @@
 name: pass_it_on
-description: "A new Flutter project."
+description: "PassItOn - A premier peer-to-peer campus marketplace app for sustainable student buying, selling, and negotiating."
 # The following line prevents the package from being accidentally published to
 # pub.dev using `flutter pub publish`. This is preferred for private packages.
 publish_to: 'none' # Remove this line if you wish to publish to pub.dev
@@ -38,7 +38,8 @@ dependencies:
   firebase_auth: ^7.1.0
   cloud_firestore: ^7.2.0
   provider: ^6.1.5+1
-
+  web: ^1.1.0
+  http: ^1.2.2
 dev_dependencies:
   flutter_test:
     sdk: flutter
@@ -60,6 +61,36 @@ flutter:
   # included with your application, so that you can use the icons in
   # the material Icons class.
   uses-material-design: true
+
+  fonts:
+    - family: EBGaramond
+      fonts:
+        - asset: assets/fonts/EBGaramond-Regular.ttf
+          weight: 400
+        - asset: assets/fonts/EBGaramond-Italic.ttf
+          weight: 400
+          style: italic
+        - asset: assets/fonts/EBGaramond-Medium.ttf
+          weight: 500
+        - asset: assets/fonts/EBGaramond-SemiBold.ttf
+          weight: 600
+        - asset: assets/fonts/EBGaramond-Bold.ttf
+          weight: 700
+    - family: BodoniModa
+      fonts:
+        - asset: assets/fonts/BodoniModa-SemiBold.ttf
+          weight: 600
+        - asset: assets/fonts/BodoniModa-Bold.ttf
+          weight: 700
+        - asset: assets/fonts/BodoniModa-BoldItalic.ttf
+          weight: 700
+          style: italic
+        - asset: assets/fonts/BodoniModa-ExtraBold.ttf
+          weight: 800
+    - family: Italiana
+      fonts:
+        - asset: assets/fonts/Italiana-Regular.ttf
+          weight: 400
 
   # To add assets to your application, add an assets section, like this:
   # assets:
