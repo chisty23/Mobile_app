@@ -43,7 +43,7 @@ jobs:
           node --check index.js
 
       - name: Build production web bundle
-        run: flutter build web --release
+        run: flutter build web --release --pwa-strategy=none
 
       - name: Check Firebase deploy secret
         id: check_secret
