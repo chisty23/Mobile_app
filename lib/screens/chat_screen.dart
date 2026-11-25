@@ -6,6 +6,8 @@ import '../models.dart';
 import '../providers/app_providers.dart';
 import '../utils/app_typography.dart';
 import '../utils/formatters.dart';
+import '../widgets/seller_profile_sheet.dart';
+import '../widgets/user_avatar.dart';
 
 class ListingChatScreen extends StatefulWidget {
   final String threadId;
@@ -14,8 +16,10 @@ class ListingChatScreen extends StatefulWidget {
   final int listingPrice;
   final String buyerId;
   final String buyerName;
+  final String buyerPhotoUrl;
   final String sellerId;
   final String sellerName;
+  final String sellerPhotoUrl;
 
   const ListingChatScreen({
     super.key,
@@ -25,8 +29,10 @@ class ListingChatScreen extends StatefulWidget {
     required this.listingPrice,
     required this.buyerId,
     required this.buyerName,
+    this.buyerPhotoUrl = '',
     required this.sellerId,
     required this.sellerName,
+    this.sellerPhotoUrl = '',
   });
 
   @override
@@ -80,30 +86,63 @@ class _ListingChatScreenState extends State<ListingChatScreen> {
   @override
   Widget build(BuildContext context) {
     final chat = context.watch<ChatProvider>();
-    final currentUid = FirebaseAuth.instance.currentUser?.uid ?? '';
+    final dir = context.watch<ProfileDirectoryProvider>();
+    final currentUser = FirebaseAuth.instance.currentUser;
+    final currentUid = currentUser?.uid ?? '';
     final isBuyer = currentUid == widget.buyerId;
-    final peerName = isBuyer ? widget.sellerName : widget.buyerName;
+    final peerId = isBuyer ? widget.sellerId : widget.buyerId;
+    final fallbackPeerName = isBuyer ? widget.sellerName : widget.buyerName;
+    final peerName = dir.nameFor(peerId, fallback: fallbackPeerName);
+    final peerPhoto = dir.photoFor(
+      peerId,
+      fallback: isBuyer ? widget.sellerPhotoUrl : widget.buyerPhotoUrl,
+    );
+    final myFallbackName = isBuyer ? widget.buyerName : widget.sellerName;
+    final myPhoto = dir.photoFor(
+      currentUid,
+      fallback: isBuyer ? widget.buyerPhotoUrl : widget.sellerPhotoUrl,
+    );
     final isDark = Theme.of(context).brightness == Brightness.dark;
 
     return Scaffold(
       appBar: AppBar(
         backgroundColor: isDark ? const Color(0xFF1A1D24) : Colors.white,
         elevation: 0.5,
-        title: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+        title: Row(
           children: [
-            Text(
-              peerName,
-              style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w800),
-            ),
-            Text(
-              '${widget.listingTitle} · ${AppFormatters.formatBDT(widget.listingPrice)}',
-              style: TextStyle(
-                fontSize: 12,
-                color: isDark ? Colors.grey.shade400 : const Color(0xFF626779),
+            UserAvatar(
+              uid: peerId,
+              name: peerName,
+              photoUrl: peerPhoto,
+              radius: 18,
+              onTap: () => SellerProfileSheet.show(
+                context,
+                sellerId: peerId,
+                sellerName: peerName,
               ),
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    peerName,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w800),
+                  ),
+                  Text(
+                    '${widget.listingTitle} · ${AppFormatters.formatBDT(widget.listingPrice)}',
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: isDark ? Colors.grey.shade400 : const Color(0xFF626779),
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ],
+              ),
             ),
           ],
         ),
@@ -160,50 +199,88 @@ class _ListingChatScreenState extends State<ListingChatScreen> {
                       itemBuilder: (context, i) {
                         final msg = messages[i];
                         final mine = msg.senderId == currentUid;
-                        return Align(
-                          alignment: mine ? Alignment.centerRight : Alignment.centerLeft,
-                          child: Container(
-                            margin: const EdgeInsets.only(bottom: 10),
-                            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-                            constraints: const BoxConstraints(maxWidth: 320),
-                            decoration: BoxDecoration(
-                              color: mine
-                                  ? const Color(0xFF252832)
-                                  : (isDark ? const Color(0xFF1E222B) : Colors.white),
-                              borderRadius: BorderRadius.only(
-                                topLeft: const Radius.circular(16),
-                                topRight: const Radius.circular(16),
-                                bottomLeft: Radius.circular(mine ? 16 : 4),
-                                bottomRight: Radius.circular(mine ? 4 : 16),
-                              ),
-                              border: mine
-                                  ? null
-                                  : Border.all(
-                                      color: isDark ? const Color(0xFF2E3442) : Colors.grey.shade200,
-                                    ),
-                            ),
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  msg.text,
-                                  style: TextStyle(
-                                    color: mine
-                                        ? Colors.white
-                                        : (isDark ? Colors.white : const Color(0xFF252832)),
-                                    fontSize: 14,
-                                  ),
-                                ),
-                                const SizedBox(height: 4),
-                                Text(
-                                  AppFormatters.formatRelativeTime(msg.createdAt),
-                                  style: TextStyle(
-                                    color: mine ? Colors.white54 : Colors.grey.shade500,
-                                    fontSize: 10,
-                                  ),
-                                ),
+                        final bubbleAvatar = UserAvatar(
+                          uid: msg.senderId,
+                          name: msg.senderName.isNotEmpty
+                              ? msg.senderName
+                              : (mine ? myFallbackName : peerName),
+                          photoUrl: msg.senderPhotoUrl.isNotEmpty
+                              ? msg.senderPhotoUrl
+                              : (mine ? myPhoto : peerPhoto),
+                          radius: 14,
+                          onTap: () => SellerProfileSheet.show(
+                            context,
+                            sellerId: msg.senderId,
+                            sellerName: msg.senderName.isNotEmpty
+                                ? msg.senderName
+                                : peerName,
+                          ),
+                        );
+                        return Padding(
+                          padding: const EdgeInsets.only(bottom: 10),
+                          child: Row(
+                            mainAxisAlignment:
+                                mine ? MainAxisAlignment.end : MainAxisAlignment.start,
+                            crossAxisAlignment: CrossAxisAlignment.end,
+                            children: [
+                              if (!mine) ...[
+                                bubbleAvatar,
+                                const SizedBox(width: 8),
                               ],
-                            ),
+                              Flexible(
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 14,
+                                    vertical: 10,
+                                  ),
+                                  constraints: const BoxConstraints(maxWidth: 320),
+                                  decoration: BoxDecoration(
+                                    color: mine
+                                        ? const Color(0xFF252832)
+                                        : (isDark ? const Color(0xFF1E222B) : Colors.white),
+                                    borderRadius: BorderRadius.only(
+                                      topLeft: const Radius.circular(16),
+                                      topRight: const Radius.circular(16),
+                                      bottomLeft: Radius.circular(mine ? 16 : 4),
+                                      bottomRight: Radius.circular(mine ? 4 : 16),
+                                    ),
+                                    border: mine
+                                        ? null
+                                        : Border.all(
+                                            color: isDark
+                                                ? const Color(0xFF2E3442)
+                                                : Colors.grey.shade200,
+                                          ),
+                                  ),
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        msg.text,
+                                        style: TextStyle(
+                                          color: mine
+                                              ? Colors.white
+                                              : (isDark ? Colors.white : const Color(0xFF252832)),
+                                          fontSize: 14,
+                                        ),
+                                      ),
+                                      const SizedBox(height: 4),
+                                      Text(
+                                        AppFormatters.formatRelativeTime(msg.createdAt),
+                                        style: TextStyle(
+                                          color: mine ? Colors.white54 : Colors.grey.shade500,
+                                          fontSize: 10,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                              if (mine) ...[
+                                const SizedBox(width: 8),
+                                bubbleAvatar,
+                              ],
+                            ],
                           ),
                         );
                       },
@@ -354,21 +431,21 @@ class ChatsDrawerSheet extends StatelessWidget {
                           separatorBuilder: (context, index) => const SizedBox(height: 10),
                           itemBuilder: (context, i) {
                             final t = chat.threads[i];
-                            final peerName = t.buyerId == uid ? t.sellerName : t.buyerName;
+                            final isBuyer = t.buyerId == uid;
+                            final peerId = isBuyer ? t.sellerId : t.buyerId;
+                            final peerName = isBuyer ? t.sellerName : t.buyerName;
+                            final peerPhoto =
+                                isBuyer ? t.sellerPhotoUrl : t.buyerPhotoUrl;
                             return ListTile(
                               tileColor: isDark ? const Color(0xFF1E222B) : Colors.white,
                               shape: RoundedRectangleBorder(
                                 borderRadius: BorderRadius.circular(16),
                               ),
-                              leading: CircleAvatar(
-                                backgroundColor: const Color(0xFF252832),
-                                child: Text(
-                                  peerName.isNotEmpty ? peerName[0].toUpperCase() : '?',
-                                  style: const TextStyle(
-                                    color: Colors.white,
-                                    fontWeight: FontWeight.w800,
-                                  ),
-                                ),
+                              leading: UserAvatar(
+                                uid: peerId,
+                                name: peerName,
+                                photoUrl: peerPhoto,
+                                radius: 22,
                               ),
                               title: Text(
                                 '$peerName · ${t.listingTitle}',
@@ -397,8 +474,10 @@ class ChatsDrawerSheet extends StatelessWidget {
                                       listingPrice: t.listingPrice,
                                       buyerId: t.buyerId,
                                       buyerName: t.buyerName,
+                                      buyerPhotoUrl: t.buyerPhotoUrl,
                                       sellerId: t.sellerId,
                                       sellerName: t.sellerName,
+                                      sellerPhotoUrl: t.sellerPhotoUrl,
                                     ),
                                   ),
                                 );
@@ -556,7 +635,11 @@ class _MessagesScreenState extends State<MessagesScreen> {
                         separatorBuilder: (context, index) => const SizedBox(height: 10),
                         itemBuilder: (context, i) {
                           final t = filtered[i];
-                          final peerName = t.buyerId == uid ? t.sellerName : t.buyerName;
+                          final isBuyer = t.buyerId == uid;
+                          final peerId = isBuyer ? t.sellerId : t.buyerId;
+                          final peerName = isBuyer ? t.sellerName : t.buyerName;
+                          final peerPhoto =
+                              isBuyer ? t.sellerPhotoUrl : t.buyerPhotoUrl;
                           return Material(
                             color: isDark ? const Color(0xFF1E222B) : Colors.white,
                             borderRadius: BorderRadius.circular(16),
@@ -573,8 +656,10 @@ class _MessagesScreenState extends State<MessagesScreen> {
                                       listingPrice: t.listingPrice,
                                       buyerId: t.buyerId,
                                       buyerName: t.buyerName,
+                                      buyerPhotoUrl: t.buyerPhotoUrl,
                                       sellerId: t.sellerId,
                                       sellerName: t.sellerName,
+                                      sellerPhotoUrl: t.sellerPhotoUrl,
                                     ),
                                   ),
                                 );
@@ -591,15 +676,11 @@ class _MessagesScreenState extends State<MessagesScreen> {
                                 ),
                                 child: Row(
                                   children: [
-                                    CircleAvatar(
-                                      backgroundColor: const Color(0xFF252832),
-                                      child: Text(
-                                        peerName.isNotEmpty ? peerName[0].toUpperCase() : '?',
-                                        style: const TextStyle(
-                                          color: Colors.white,
-                                          fontWeight: FontWeight.w700,
-                                        ),
-                                      ),
+                                    UserAvatar(
+                                      uid: peerId,
+                                      name: peerName,
+                                      photoUrl: peerPhoto,
+                                      radius: 22,
                                     ),
                                     const SizedBox(width: 14),
                                     Expanded(

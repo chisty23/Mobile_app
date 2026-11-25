@@ -390,7 +390,9 @@ app.post('/listings/publish', requireAuth, async (req, res) => {
     });
 
     const userSnap = await db.collection('users').doc(req.auth.uid).get();
-    const sellerName = userSnap.data()?.name || req.auth.name || 'Campus Trader';
+    const sellerProfile = userSnap.data() || {};
+    const sellerName = sellerProfile.name || req.auth.name || 'Campus Trader';
+    const sellerPhotoUrl = sellerProfile.photoUrl || '';
     const cleanImages = Array.isArray(images)
       ? images.map((e) => String(e).trim()).filter(Boolean).slice(0, 3)
       : [];
@@ -418,6 +420,7 @@ app.post('/listings/publish', requireAuth, async (req, res) => {
         images: cleanImages,
         sellerId: req.auth.uid,
         sellerName,
+        sellerPhotoUrl,
         status: 'available',
         reservedFor: '',
         statsCounted: false,
@@ -452,7 +455,9 @@ app.post('/offers/submit', requireAuth, async (req, res) => {
     const listingRef = db.collection('listings').doc(listingId);
 
     const userSnap = await db.collection('users').doc(uid).get();
-    const buyerName = userSnap.data()?.name || req.auth.name || 'Buyer';
+    const buyerProfile = userSnap.data() || {};
+    const buyerName = buyerProfile.name || req.auth.name || 'Buyer';
+    const buyerPhotoUrl = buyerProfile.photoUrl || '';
 
     await db.runTransaction(async (tx) => {
       const listingSnap = await tx.get(listingRef);
@@ -494,8 +499,11 @@ app.post('/offers/submit', requireAuth, async (req, res) => {
           listingId,
           listingTitle: live.title,
           sellerId: live.sellerId,
+          sellerName: live.sellerName || '',
+          sellerPhotoUrl: live.sellerPhotoUrl || '',
           buyerId: uid,
           buyerName,
+          buyerPhotoUrl,
           amount: intAmount,
           lastUpdatedBy: uid,
           history: existing
@@ -708,12 +716,15 @@ app.post('/ratings/submit', requireAuth, async (req, res) => {
       if (existing.exists) throw new Error('This sale has already been rated');
 
       const userSnap = await tx.get(db.collection('users').doc(uid));
-      const buyerName = userSnap.data()?.name || req.auth.name || 'Verified Buyer';
+      const buyerProfile = userSnap.data() || {};
+      const buyerName = buyerProfile.name || req.auth.name || 'Verified Buyer';
+      const buyerPhotoUrl = buyerProfile.photoUrl || '';
 
       tx.set(ratingRef, {
         sellerId,
         buyerId: uid,
         buyerName,
+        buyerPhotoUrl,
         stars: score,
         comment: String(comment).trim(),
         createdAt: FieldValue.serverTimestamp(),
@@ -746,6 +757,10 @@ app.post('/account/delete', requireAuth, async (req, res) => {
     }
     const favs = await db.collection('users').doc(uid).collection('favorites').get();
     for (const doc of favs.docs) {
+      batch.delete(doc.ref);
+    }
+    const phoneRefs = await db.collection('phone_directory').where('uid', '==', uid).get();
+    for (const doc of phoneRefs.docs) {
       batch.delete(doc.ref);
     }
     batch.delete(db.collection('public_profiles').doc(uid));
@@ -829,10 +844,16 @@ exports.onUserWrite = onDocumentWritten('users/{userId}', async (event) => {
     await publicRef.delete().catch(() => {});
     return;
   }
-  await publicRef.set(
+    await publicRef.set(
     {
       name: after.name || 'PassItOn Member',
+      photoUrl: after.photoUrl || '',
+      bio: after.bio || '',
       department: after.department || '',
+      location: after.location || '',
+      batchYear: after.batchYear || '',
+      meetupSpot: after.meetupSpot || '',
+      phoneVerified: Boolean(after.phoneVerified),
       soldCount: Number(after.soldCount || 0),
       boughtCount: Number(after.boughtCount || 0),
       ratingSum: Number(after.ratingSum || 0),

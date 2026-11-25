@@ -5,6 +5,7 @@ import 'package:provider/provider.dart';
 import '../providers/app_providers.dart';
 import '../utils/app_typography.dart';
 import '../widgets/animated_ui.dart';
+import '../widgets/user_avatar.dart';
 import 'browse_screen.dart';
 import 'chat_screen.dart';
 import 'notifications_sheet.dart';
@@ -138,6 +139,17 @@ class _RootScreenState extends State<RootScreen> {
                           isDark,
                           icon: Icons.person_outline_rounded,
                           activeIcon: Icons.person_rounded,
+                          leadingOverride: !isGuest
+                              ? UserAvatar(
+                                  uid: FirebaseAuth.instance.currentUser?.uid,
+                                  name: FirebaseAuth
+                                          .instance.currentUser?.displayName ??
+                                      'Me',
+                                  radius: 10,
+                                  showBorder: index == 4,
+                                  borderColor: const Color(0xFF667B72),
+                                )
+                              : null,
                         ),
                         const Spacer(),
                         if (!isGuest) ...[
@@ -260,7 +272,22 @@ class _RootScreenState extends State<RootScreen> {
                     label: 'Offers',
                   ),
                   NavigationDestination(
-                    icon: _navIcon(Icons.person_outline_rounded, Icons.person_rounded, index == 4, isDark),
+                    icon: !isGuest
+                        ? UserAvatar(
+                            uid: FirebaseAuth.instance.currentUser?.uid,
+                            name: FirebaseAuth
+                                    .instance.currentUser?.displayName ??
+                                'Me',
+                            radius: 12,
+                            showBorder: index == 4,
+                            borderColor: const Color(0xFF667B72),
+                          )
+                        : _navIcon(
+                            Icons.person_outline_rounded,
+                            Icons.person_rounded,
+                            index == 4,
+                            isDark,
+                          ),
                     label: 'Profile',
                   ),
                 ],
@@ -275,6 +302,7 @@ class _RootScreenState extends State<RootScreen> {
     bool isDark, {
     required IconData icon,
     required IconData activeIcon,
+    Widget? leadingOverride,
     int badge = 0,
   }) {
     final active = index == tabIndex;
@@ -296,11 +324,12 @@ class _RootScreenState extends State<RootScreen> {
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(
-              active ? activeIcon : icon,
-              size: 18,
-              color: active ? const Color(0xFF667B72) : fgColor,
-            ),
+            leadingOverride ??
+                Icon(
+                  active ? activeIcon : icon,
+                  size: 18,
+                  color: active ? const Color(0xFF667B72) : fgColor,
+                ),
             const SizedBox(width: 7),
             Text(
               label,

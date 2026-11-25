@@ -8,6 +8,8 @@ import '../providers/app_providers.dart';
 import '../utils/app_typography.dart';
 import '../utils/formatters.dart';
 import '../widgets/animated_ui.dart';
+import '../widgets/seller_profile_sheet.dart';
+import '../widgets/user_avatar.dart';
 import 'chat_screen.dart';
 
 class OffersScreen extends StatefulWidget {
@@ -489,6 +491,16 @@ class _OffersScreenState extends State<OffersScreen>
     }
 
     final chatProv = context.read<ChatProvider>();
+    final dir = context.watch<ProfileDirectoryProvider>();
+    final peerId = received ? offer.buyerId : offer.sellerId;
+    final peerFallbackName = received
+        ? offer.buyerName
+        : (offer.sellerName.isNotEmpty ? offer.sellerName : 'Seller');
+    final peerName = dir.nameFor(peerId, fallback: peerFallbackName);
+    final peerPhoto = dir.photoFor(
+      peerId,
+      fallback: received ? offer.buyerPhotoUrl : offer.sellerPhotoUrl,
+    );
     final messenger = ScaffoldMessenger.of(context);
 
     return Container(
@@ -530,30 +542,42 @@ class _OffersScreenState extends State<OffersScreen>
                         color: isDark ? Colors.white : const Color(0xFF252832),
                       ),
                     ),
-                    const SizedBox(height: 4),
-                    Row(
-                      children: [
-                        Icon(
-                          received
-                              ? Icons.person_outline_rounded
-                              : Icons.storefront_outlined,
-                          size: 14,
-                          color: isDark ? Colors.grey.shade400 : const Color(0xFF777D8E),
-                        ),
-                        const SizedBox(width: 5),
-                        Text(
-                          received
-                              ? 'From ${offer.buyerName}'
-                              : 'Negotiating with Seller',
-                          style: TextStyle(
-                            color: isDark
-                                ? Colors.grey.shade400
-                                : const Color(0xFF777D8E),
-                            fontSize: 12,
-                            fontWeight: FontWeight.w600,
+                    const SizedBox(height: 6),
+                    InkWell(
+                      onTap: () => SellerProfileSheet.show(
+                        context,
+                        sellerId: peerId,
+                        sellerName: peerName,
+                      ),
+                      borderRadius: BorderRadius.circular(99),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          UserAvatar(
+                            uid: peerId,
+                            name: peerName,
+                            photoUrl: peerPhoto,
+                            radius: 13,
                           ),
-                        ),
-                      ],
+                          const SizedBox(width: 7),
+                          Flexible(
+                            child: Text(
+                              received
+                                  ? 'Offer from $peerName'
+                                  : 'Seller: $peerName',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                color: isDark
+                                    ? Colors.grey.shade300
+                                    : const Color(0xFF565C6E),
+                                fontSize: 12.5,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
                   ],
                 ),
@@ -857,6 +881,12 @@ class _OffersScreenState extends State<OffersScreen>
               // Always let buyer & seller open 1-to-1 chat
               OutlinedButton.icon(
                 onPressed: () {
+                  final resolvedSellerName = dir.nameFor(
+                    offer.sellerId,
+                    fallback: offer.sellerName.isNotEmpty
+                        ? offer.sellerName
+                        : 'Seller',
+                  );
                   Navigator.push(
                     context,
                     MaterialPageRoute(
@@ -866,9 +896,20 @@ class _OffersScreenState extends State<OffersScreen>
                         listingTitle: offer.listingTitle,
                         listingPrice: offer.amount,
                         buyerId: offer.buyerId,
-                        buyerName: offer.buyerName,
+                        buyerName: dir.nameFor(
+                          offer.buyerId,
+                          fallback: offer.buyerName,
+                        ),
+                        buyerPhotoUrl: dir.photoFor(
+                          offer.buyerId,
+                          fallback: offer.buyerPhotoUrl,
+                        ),
                         sellerId: offer.sellerId,
-                        sellerName: received ? 'You' : 'Seller',
+                        sellerName: resolvedSellerName,
+                        sellerPhotoUrl: dir.photoFor(
+                          offer.sellerId,
+                          fallback: offer.sellerPhotoUrl,
+                        ),
                       ),
                     ),
                   );

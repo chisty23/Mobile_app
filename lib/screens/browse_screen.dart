@@ -13,6 +13,7 @@ import '../widgets/payment_checkout_sheet.dart';
 import '../widgets/report_sheet.dart';
 import '../widgets/seller_profile_sheet.dart';
 import '../widgets/smart_image.dart';
+import '../widgets/user_avatar.dart';
 import 'chat_screen.dart';
 import 'notifications_sheet.dart';
 
@@ -453,7 +454,7 @@ class BrowseScreen extends StatelessWidget {
                         maxCrossAxisExtent: 235,
                         mainAxisSpacing: 14,
                         crossAxisSpacing: 14,
-                        childAspectRatio: 0.70,
+                        childAspectRatio: 0.66,
                       ),
                     ),
                   ),
@@ -857,6 +858,35 @@ class _ListingCardState extends State<_ListingCard> {
                           ),
                       ],
                     ),
+                    const SizedBox(height: 6),
+                    Row(
+                      children: [
+                        UserAvatar(
+                          uid: listing.sellerId,
+                          name: listing.sellerName,
+                          photoUrl: listing.sellerPhotoUrl,
+                          radius: 9,
+                        ),
+                        const SizedBox(width: 6),
+                        Expanded(
+                          child: Text(
+                            context.watch<ProfileDirectoryProvider>().nameFor(
+                                  listing.sellerId,
+                                  fallback: listing.sellerName,
+                                ),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              fontSize: 11,
+                              fontWeight: FontWeight.w600,
+                              color: isDark
+                                  ? Colors.grey.shade400
+                                  : const Color(0xFF6A7080),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
                   ],
                 ),
               ),
@@ -957,7 +987,12 @@ class _ListingDetailSheetState extends State<ListingDetailSheet> {
 
   void _openDirectChat(BuildContext context, User currentUser) {
     final buyerId = currentUser.uid;
-    final buyerName = currentUser.displayName ?? 'Buyer';
+    final dir = context.read<ProfileDirectoryProvider>();
+    final buyerName = dir.nameFor(
+      buyerId,
+      fallback: currentUser.displayName ?? 'Buyer',
+    );
+    final buyerPhoto = dir.photoFor(buyerId);
     final threadId = context.read<ChatProvider>().threadIdFor(widget.listing.id, buyerId);
     Navigator.push(
       context,
@@ -969,8 +1004,10 @@ class _ListingDetailSheetState extends State<ListingDetailSheet> {
           listingPrice: widget.listing.price,
           buyerId: buyerId,
           buyerName: buyerName,
+          buyerPhotoUrl: buyerPhoto,
           sellerId: widget.listing.sellerId,
           sellerName: widget.listing.sellerName,
+          sellerPhotoUrl: widget.listing.sellerPhotoUrl,
         ),
       ),
     );
@@ -1257,17 +1294,12 @@ class _ListingDetailSheetState extends State<ListingDetailSheet> {
             ),
             child: Row(
               children: [
-                CircleAvatar(
-                  backgroundColor: isDark ? const Color(0xFF262C38) : const Color(0xFFF0EBDC),
-                  child: Text(
-                    widget.listing.sellerName.isEmpty
-                        ? '?'
-                        : widget.listing.sellerName[0].toUpperCase(),
-                    style: TextStyle(
-                      color: isDark ? Colors.white : const Color(0xFF252832),
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
+                UserAvatar(
+                  uid: widget.listing.sellerId,
+                  name: widget.listing.sellerName,
+                  photoUrl: widget.listing.sellerPhotoUrl,
+                  radius: 22,
+                  showBorder: true,
                 ),
                 const SizedBox(width: 12),
                 Expanded(
@@ -1359,6 +1391,12 @@ class _ListingDetailSheetState extends State<ListingDetailSheet> {
               style: TextStyle(color: Color(0xFF777D8E)),
             ),
           ),
+        const SizedBox(height: 18),
+        _ListingCommentsSection(
+          listing: widget.listing,
+          listingProvider: listingProvider,
+          isDark: isDark,
+        ),
       ],
     );
   }
@@ -1606,4 +1644,269 @@ class _ListingDetailSheetState extends State<ListingDetailSheet> {
           borderSide: BorderSide.none,
         ),
       );
+}
+
+class _ListingCommentsSection extends StatefulWidget {
+  final Listing listing;
+  final ListingProvider listingProvider;
+  final bool isDark;
+
+  const _ListingCommentsSection({
+    required this.listing,
+    required this.listingProvider,
+    required this.isDark,
+  });
+
+  @override
+  State<_ListingCommentsSection> createState() =>
+      _ListingCommentsSectionState();
+}
+
+class _ListingCommentsSectionState extends State<_ListingCommentsSection> {
+  final _commentCtrl = TextEditingController();
+  bool _posting = false;
+
+  @override
+  void dispose() {
+    _commentCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _submit() async {
+    final text = _commentCtrl.text.trim();
+    if (text.isEmpty || _posting) return;
+    setState(() => _posting = true);
+    final ok = await widget.listingProvider.addComment(
+      listing: widget.listing,
+      text: text,
+    );
+    if (!mounted) return;
+    setState(() => _posting = false);
+    if (ok) {
+      _commentCtrl.clear();
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            widget.listingProvider.error ?? 'Could not post comment',
+          ),
+        ),
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final currentUser = FirebaseAuth.instance.currentUser;
+    final dir = context.watch<ProfileDirectoryProvider>();
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Row(
+          children: [
+            Icon(Icons.forum_outlined, size: 17, color: Color(0xFF667B72)),
+            SizedBox(width: 6),
+            Text(
+              'Questions & Comments',
+              style: TextStyle(fontSize: 15, fontWeight: FontWeight.w800),
+            ),
+          ],
+        ),
+        const SizedBox(height: 10),
+        StreamBuilder<List<ListingComment>>(
+          stream: widget.listingProvider.commentsStream(widget.listing.id),
+          builder: (context, snapshot) {
+            final comments = snapshot.data ?? const [];
+            if (comments.isEmpty) {
+              return Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: widget.isDark ? const Color(0xFF1E222B) : Colors.white,
+                  borderRadius: BorderRadius.circular(14),
+                ),
+                child: Text(
+                  'No public questions yet. Ask about condition, warranty, or meetup timing.',
+                  style: TextStyle(
+                    fontSize: 12.5,
+                    color: widget.isDark
+                        ? Colors.grey.shade400
+                        : const Color(0xFF777D8E),
+                  ),
+                ),
+              );
+            }
+            return Column(
+              children: [
+                for (final c in comments)
+                  Container(
+                    margin: const EdgeInsets.only(bottom: 8),
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: widget.isDark ? const Color(0xFF1E222B) : Colors.white,
+                      borderRadius: BorderRadius.circular(14),
+                    ),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        UserAvatar(
+                          uid: c.authorId,
+                          name: c.authorName,
+                          photoUrl: c.authorPhotoUrl,
+                          radius: 16,
+                          onTap: () => SellerProfileSheet.show(
+                            context,
+                            sellerId: c.authorId,
+                            sellerName: dir.nameFor(
+                              c.authorId,
+                              fallback: c.authorName,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(
+                                children: [
+                                  Flexible(
+                                    child: Text(
+                                      dir.nameFor(
+                                        c.authorId,
+                                        fallback: c.authorName,
+                                      ),
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: const TextStyle(
+                                        fontWeight: FontWeight.w800,
+                                        fontSize: 12.5,
+                                      ),
+                                    ),
+                                  ),
+                                  if (c.isSeller) ...[
+                                    const SizedBox(width: 6),
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 6,
+                                        vertical: 1,
+                                      ),
+                                      decoration: BoxDecoration(
+                                        color: const Color(0xFF24A889)
+                                            .withValues(alpha: 0.14),
+                                        borderRadius: BorderRadius.circular(5),
+                                      ),
+                                      child: const Text(
+                                        'SELLER',
+                                        style: TextStyle(
+                                          fontSize: 9,
+                                          fontWeight: FontWeight.w900,
+                                          color: Color(0xFF24A889),
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                  const SizedBox(width: 6),
+                                  Text(
+                                    AppFormatters.formatRelativeTime(c.createdAt),
+                                    style: const TextStyle(
+                                      fontSize: 10.5,
+                                      color: Color(0xFF8C92A0),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 4),
+                              Text(
+                                c.text,
+                                style: TextStyle(
+                                  fontSize: 13,
+                                  color: widget.isDark
+                                      ? Colors.grey.shade200
+                                      : const Color(0xFF333845),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        if (currentUser != null &&
+                            (currentUser.uid == c.authorId ||
+                                currentUser.uid == widget.listing.sellerId))
+                          IconButton(
+                            tooltip: 'Delete comment',
+                            icon: const Icon(
+                              Icons.delete_outline,
+                              size: 16,
+                              color: Color(0xFF9196A4),
+                            ),
+                            onPressed: () => widget.listingProvider.deleteComment(
+                              widget.listing.id,
+                              c.id,
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+              ],
+            );
+          },
+        ),
+        if (currentUser != null) ...[
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              UserAvatar(
+                uid: currentUser.uid,
+                name: dir.nameFor(
+                  currentUser.uid,
+                  fallback: currentUser.displayName ?? 'Me',
+                ),
+                radius: 16,
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: TextField(
+                  controller: _commentCtrl,
+                  textInputAction: TextInputAction.send,
+                  onSubmitted: (_) => _submit(),
+                  decoration: InputDecoration(
+                    hintText: 'Write a public comment or question...',
+                    filled: true,
+                    fillColor: widget.isDark ? const Color(0xFF1E222B) : Colors.white,
+                    contentPadding: const EdgeInsets.symmetric(
+                      horizontal: 14,
+                      vertical: 10,
+                    ),
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(14),
+                      borderSide: BorderSide.none,
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              IconButton.filled(
+                onPressed: _posting ? null : _submit,
+                style: IconButton.styleFrom(
+                  backgroundColor: const Color(0xFF252832),
+                  foregroundColor: Colors.white,
+                ),
+                icon: _posting
+                    ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: Colors.white,
+                        ),
+                      )
+                    : const Icon(Icons.send_rounded, size: 18),
+              ),
+            ],
+          ),
+        ],
+      ],
+    );
+  }
 }

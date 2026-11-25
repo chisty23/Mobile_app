@@ -1,5 +1,132 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 
+class PublicUserProfile {
+  final String uid;
+  final String name;
+  final String photoUrl;
+  final String bio;
+  final String department;
+  final String location;
+  final String batchYear;
+  final String meetupSpot;
+  final bool verifiedStudent;
+  final bool phoneVerified;
+  final bool emailVerified;
+  final int soldCount;
+  final int boughtCount;
+  final int ratingSum;
+  final int ratingCount;
+  final bool isBanned;
+  final DateTime? updatedAt;
+
+  const PublicUserProfile({
+    required this.uid,
+    this.name = 'PassItOn Member',
+    this.photoUrl = '',
+    this.bio = '',
+    this.department = '',
+    this.location = '',
+    this.batchYear = '',
+    this.meetupSpot = '',
+    this.verifiedStudent = false,
+    this.phoneVerified = false,
+    this.emailVerified = false,
+    this.soldCount = 0,
+    this.boughtCount = 0,
+    this.ratingSum = 0,
+    this.ratingCount = 0,
+    this.isBanned = false,
+    this.updatedAt,
+  });
+
+  double get averageRating => ratingCount == 0 ? 0.0 : ratingSum / ratingCount;
+
+  int get completionPercent {
+    var score = 0;
+    if (name.trim().isNotEmpty) score += 20;
+    if (photoUrl.trim().isNotEmpty) score += 25;
+    if (bio.trim().isNotEmpty) score += 20;
+    if (department.trim().isNotEmpty) score += 15;
+    if (location.trim().isNotEmpty) score += 10;
+    if (meetupSpot.trim().isNotEmpty || batchYear.trim().isNotEmpty) score += 10;
+    return score.clamp(0, 100);
+  }
+
+  factory PublicUserProfile.fromMap(String uid, Map<String, dynamic>? d) {
+    final data = d ?? const <String, dynamic>{};
+    return PublicUserProfile(
+      uid: uid,
+      name: (data['name'] as String?)?.trim().isNotEmpty == true
+          ? (data['name'] as String).trim()
+          : 'PassItOn Member',
+      photoUrl: (data['photoUrl'] as String?) ?? '',
+      bio: (data['bio'] as String?) ?? '',
+      department: (data['department'] as String?) ?? '',
+      location: (data['location'] as String?) ?? '',
+      batchYear: (data['batchYear'] as String?) ?? '',
+      meetupSpot: (data['meetupSpot'] as String?) ?? '',
+      verifiedStudent: data['verifiedStudent'] == true,
+      phoneVerified: data['phoneVerified'] == true,
+      emailVerified: data['emailVerified'] == true,
+      soldCount: (data['soldCount'] as num?)?.toInt() ?? 0,
+      boughtCount: (data['boughtCount'] as num?)?.toInt() ?? 0,
+      ratingSum: (data['ratingSum'] as num?)?.toInt() ?? 0,
+      ratingCount: (data['ratingCount'] as num?)?.toInt() ?? 0,
+      isBanned: data['isBanned'] == true,
+      updatedAt: data['updatedAt'] is Timestamp
+          ? (data['updatedAt'] as Timestamp).toDate()
+          : null,
+    );
+  }
+
+  factory PublicUserProfile.fromSnapshot(
+    DocumentSnapshot<Map<String, dynamic>> doc,
+  ) {
+    return PublicUserProfile.fromMap(doc.id, doc.data());
+  }
+}
+
+class ListingComment {
+  final String id;
+  final String listingId;
+  final String authorId;
+  final String authorName;
+  final String authorPhotoUrl;
+  final String text;
+  final bool isSeller;
+  final DateTime createdAt;
+
+  ListingComment({
+    required this.id,
+    required this.listingId,
+    required this.authorId,
+    required this.authorName,
+    this.authorPhotoUrl = '',
+    required this.text,
+    this.isSeller = false,
+    required this.createdAt,
+  });
+
+  factory ListingComment.fromSnapshot(
+    DocumentSnapshot<Map<String, dynamic>> doc, {
+    String listingId = '',
+  }) {
+    final d = doc.data() ?? {};
+    return ListingComment(
+      id: doc.id,
+      listingId: (d['listingId'] as String?) ?? listingId,
+      authorId: d['authorId'] ?? '',
+      authorName: d['authorName'] ?? 'Campus Member',
+      authorPhotoUrl: d['authorPhotoUrl'] ?? '',
+      text: d['text'] ?? '',
+      isSeller: d['isSeller'] == true,
+      createdAt: d['createdAt'] is Timestamp
+          ? (d['createdAt'] as Timestamp).toDate()
+          : DateTime.now(),
+    );
+  }
+}
+
 class Listing {
   final String id;
   final String title;
@@ -13,6 +140,7 @@ class Listing {
   final List<String> images;
   final String sellerId;
   final String sellerName;
+  final String sellerPhotoUrl;
   final String status;
   final String reservedFor;
   final Timestamp? createdAt;
@@ -34,6 +162,7 @@ class Listing {
     this.images = const [],
     required this.sellerId,
     required this.sellerName,
+    this.sellerPhotoUrl = '',
     required this.status,
     required this.reservedFor,
     this.createdAt,
@@ -68,6 +197,7 @@ class Listing {
       images: mergedImages,
       sellerId: d['sellerId'] ?? '',
       sellerName: d['sellerName'] ?? 'Unknown user',
+      sellerPhotoUrl: d['sellerPhotoUrl'] ?? '',
       status: d['status'] ?? 'available',
       reservedFor: d['reservedFor'] ?? '',
       createdAt: d['createdAt'] is Timestamp ? d['createdAt'] : null,
@@ -113,8 +243,11 @@ class MarketOffer {
   final String listingId;
   final String listingTitle;
   final String sellerId;
+  final String sellerName;
+  final String sellerPhotoUrl;
   final String buyerId;
   final String buyerName;
+  final String buyerPhotoUrl;
   final int amount;
   final String lastUpdatedBy;
   final String message;
@@ -133,8 +266,11 @@ class MarketOffer {
     required this.listingId,
     required this.listingTitle,
     required this.sellerId,
+    this.sellerName = '',
+    this.sellerPhotoUrl = '',
     required this.buyerId,
     required this.buyerName,
+    this.buyerPhotoUrl = '',
     required this.amount,
     this.lastUpdatedBy = '',
     required this.message,
@@ -162,8 +298,11 @@ class MarketOffer {
       listingId: d['listingId'] ?? '',
       listingTitle: d['listingTitle'] ?? '',
       sellerId: d['sellerId'] ?? '',
+      sellerName: d['sellerName'] ?? '',
+      sellerPhotoUrl: d['sellerPhotoUrl'] ?? '',
       buyerId: d['buyerId'] ?? '',
       buyerName: d['buyerName'] ?? 'Unknown user',
+      buyerPhotoUrl: d['buyerPhotoUrl'] ?? '',
       amount: (d['amount'] as num?)?.toInt() ?? 0,
       lastUpdatedBy: d['lastUpdatedBy'] ?? '',
       message: d['message'] ?? '',
@@ -189,6 +328,7 @@ class ChatMessage {
   final String id;
   final String senderId;
   final String senderName;
+  final String senderPhotoUrl;
   final String text;
   final DateTime createdAt;
 
@@ -196,6 +336,7 @@ class ChatMessage {
     required this.id,
     required this.senderId,
     required this.senderName,
+    this.senderPhotoUrl = '',
     required this.text,
     required this.createdAt,
   });
@@ -206,6 +347,7 @@ class ChatMessage {
       id: doc.id,
       senderId: d['senderId'] ?? '',
       senderName: d['senderName'] ?? 'Member',
+      senderPhotoUrl: d['senderPhotoUrl'] ?? '',
       text: d['text'] ?? '',
       createdAt: d['createdAt'] is Timestamp
           ? (d['createdAt'] as Timestamp).toDate()
@@ -221,8 +363,10 @@ class ChatThread {
   final int listingPrice;
   final String buyerId;
   final String buyerName;
+  final String buyerPhotoUrl;
   final String sellerId;
   final String sellerName;
+  final String sellerPhotoUrl;
   final String lastMessage;
   final DateTime updatedAt;
 
@@ -233,8 +377,10 @@ class ChatThread {
     required this.listingPrice,
     required this.buyerId,
     required this.buyerName,
+    this.buyerPhotoUrl = '',
     required this.sellerId,
     required this.sellerName,
+    this.sellerPhotoUrl = '',
     required this.lastMessage,
     required this.updatedAt,
   });
@@ -248,8 +394,10 @@ class ChatThread {
       listingPrice: (d['listingPrice'] as num?)?.toInt() ?? 0,
       buyerId: d['buyerId'] ?? '',
       buyerName: d['buyerName'] ?? 'Buyer',
+      buyerPhotoUrl: d['buyerPhotoUrl'] ?? '',
       sellerId: d['sellerId'] ?? '',
       sellerName: d['sellerName'] ?? 'Seller',
+      sellerPhotoUrl: d['sellerPhotoUrl'] ?? '',
       lastMessage: d['lastMessage'] ?? '',
       updatedAt: d['updatedAt'] is Timestamp
           ? (d['updatedAt'] as Timestamp).toDate()
@@ -263,6 +411,7 @@ class SellerReview {
   final String sellerId;
   final String buyerId;
   final String buyerName;
+  final String buyerPhotoUrl;
   final int stars;
   final String comment;
   final DateTime createdAt;
@@ -272,6 +421,7 @@ class SellerReview {
     required this.sellerId,
     required this.buyerId,
     required this.buyerName,
+    this.buyerPhotoUrl = '',
     required this.stars,
     required this.comment,
     required this.createdAt,
@@ -284,6 +434,7 @@ class SellerReview {
       sellerId: d['sellerId'] ?? '',
       buyerId: d['buyerId'] ?? '',
       buyerName: d['buyerName'] ?? 'Verified Buyer',
+      buyerPhotoUrl: d['buyerPhotoUrl'] ?? '',
       stars: (d['stars'] as num?)?.toInt() ?? 5,
       comment: d['comment'] ?? '',
       createdAt: d['createdAt'] is Timestamp

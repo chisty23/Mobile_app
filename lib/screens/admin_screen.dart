@@ -8,6 +8,7 @@ import '../utils/app_typography.dart';
 import '../utils/formatters.dart';
 import '../widgets/animated_ui.dart';
 import '../widgets/smart_image.dart';
+import '../widgets/user_avatar.dart';
 
 class AdminScreen extends StatefulWidget {
   const AdminScreen({super.key});
@@ -1939,6 +1940,7 @@ class _AdminScreenState extends State<AdminScreen>
                     final name = u['name'] as String? ?? 'Member';
                     final email = u['email'] as String? ?? '';
                     final dept = u['department'] as String? ?? '';
+                    final photoUrl = u['photoUrl'] as String? ?? '';
                     final sold = (u['soldCount'] as num?)?.toInt() ?? 0;
                     final bought = (u['boughtCount'] as num?)?.toInt() ?? 0;
                     final isUserAdmin =
@@ -1964,19 +1966,16 @@ class _AdminScreenState extends State<AdminScreen>
                       ),
                       child: Row(
                         children: [
-                          CircleAvatar(
+                          UserAvatar(
+                            uid: uid,
+                            name: name,
+                            photoUrl: photoUrl,
+                            radius: 22,
                             backgroundColor: isBanned
                                 ? const Color(0xFFD94B64)
                                 : isUserAdmin
                                     ? const Color(0xFFC69C55)
                                     : const Color(0xFF252832),
-                            child: Text(
-                              name.isNotEmpty ? name[0].toUpperCase() : '?',
-                              style: const TextStyle(
-                                color: Colors.white,
-                                fontWeight: FontWeight.w900,
-                              ),
-                            ),
                           ),
                           const SizedBox(width: 12),
                           Expanded(

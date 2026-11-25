@@ -9,6 +9,7 @@ import '../utils/app_typography.dart';
 import '../utils/formatters.dart';
 import 'report_sheet.dart';
 import 'smart_image.dart';
+import 'user_avatar.dart';
 
 class SellerProfileSheet extends StatelessWidget {
   final String sellerId;
@@ -64,11 +65,17 @@ class SellerProfileSheet extends StatelessWidget {
                 final activeListings = (data['listings'] as List<Listing>?) ?? const [];
 
                 final dept = (profile['department'] as String?) ?? '';
+                final photoUrl = (profile['photoUrl'] as String?) ?? '';
+                final bio = (profile['bio'] as String?) ?? '';
+                final location = (profile['location'] as String?) ?? '';
+                final batchYear = (profile['batchYear'] as String?) ?? '';
+                final meetupSpot = (profile['meetupSpot'] as String?) ?? '';
                 final soldCount = (profile['soldCount'] as num?)?.toInt() ?? 0;
                 final ratingSum = (profile['ratingSum'] as num?)?.toInt() ?? 0;
                 final ratingCount = (profile['ratingCount'] as num?)?.toInt() ?? 0;
                 final avgRating = ratingCount == 0 ? 0.0 : ratingSum / ratingCount;
                 final isVerifiedStudent = profile['verifiedStudent'] == true;
+                final phoneVerified = profile['phoneVerified'] == true;
                 final currentUid = FirebaseAuth.instance.currentUser?.uid;
 
                 return ListView(
@@ -88,17 +95,13 @@ class SellerProfileSheet extends StatelessWidget {
                     const SizedBox(height: 18),
                     Row(
                       children: [
-                        CircleAvatar(
-                          radius: 30,
-                          backgroundColor: const Color(0xFF252832),
-                          child: Text(
-                            sellerName.isNotEmpty ? sellerName[0].toUpperCase() : '?',
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontSize: 24,
-                              fontWeight: FontWeight.w900,
-                            ),
-                          ),
+                        UserAvatar(
+                          uid: sellerId,
+                          name: sellerName,
+                          photoUrl: photoUrl,
+                          radius: 32,
+                          showBorder: true,
+                          showVerifiedBadge: isVerifiedStudent || phoneVerified,
                         ),
                         const SizedBox(width: 14),
                         Expanded(
@@ -137,7 +140,7 @@ class SellerProfileSheet extends StatelessWidget {
                                     const SizedBox(width: 5),
                                     Flexible(
                                       child: Text(
-                                        dept,
+                                        batchYear.isNotEmpty ? '$dept · Batch $batchYear' : dept,
                                         overflow: TextOverflow.ellipsis,
                                         style: TextStyle(
                                           color: isDark
@@ -148,6 +151,35 @@ class SellerProfileSheet extends StatelessWidget {
                                       ),
                                     ),
                                   ],
+                                ),
+                              if (location.isNotEmpty || meetupSpot.isNotEmpty)
+                                Padding(
+                                  padding: const EdgeInsets.only(top: 2),
+                                  child: Row(
+                                    children: [
+                                      const Icon(
+                                        Icons.place_outlined,
+                                        size: 13,
+                                        color: Color(0xFF667B72),
+                                      ),
+                                      const SizedBox(width: 4),
+                                      Flexible(
+                                        child: Text(
+                                          [
+                                            if (location.isNotEmpty) location,
+                                            if (meetupSpot.isNotEmpty) 'Meetup: $meetupSpot',
+                                          ].join(' · '),
+                                          overflow: TextOverflow.ellipsis,
+                                          style: TextStyle(
+                                            color: isDark
+                                                ? Colors.grey.shade400
+                                                : const Color(0xFF777D8E),
+                                            fontSize: 12,
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
                                 ),
                               const SizedBox(height: 4),
                               Wrap(
@@ -210,6 +242,24 @@ class SellerProfileSheet extends StatelessWidget {
                           ),
                       ],
                     ),
+                    if (bio.isNotEmpty) ...[
+                      const SizedBox(height: 14),
+                      Container(
+                        padding: const EdgeInsets.all(14),
+                        decoration: BoxDecoration(
+                          color: isDark ? const Color(0xFF1E222B) : Colors.white,
+                          borderRadius: BorderRadius.circular(16),
+                        ),
+                        child: Text(
+                          bio,
+                          style: TextStyle(
+                            fontSize: 13,
+                            height: 1.4,
+                            color: isDark ? Colors.grey.shade300 : const Color(0xFF4B505E),
+                          ),
+                        ),
+                      ),
+                    ],
                     const SizedBox(height: 22),
                     Row(
                       children: [
@@ -249,9 +299,25 @@ class SellerProfileSheet extends StatelessWidget {
                               Row(
                                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                                 children: [
-                                  Text(
-                                    r.buyerName,
-                                    style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 13),
+                                  Expanded(
+                                    child: Row(
+                                      children: [
+                                        UserAvatar(
+                                          uid: r.buyerId,
+                                          name: r.buyerName,
+                                          photoUrl: r.buyerPhotoUrl,
+                                          radius: 14,
+                                        ),
+                                        const SizedBox(width: 8),
+                                        Flexible(
+                                          child: Text(
+                                            r.buyerName,
+                                            overflow: TextOverflow.ellipsis,
+                                            style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 13),
+                                          ),
+                                        ),
+                                      ],
+                                    ),
                                   ),
                                   Row(
                                     children: [

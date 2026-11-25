@@ -49,56 +49,86 @@ class StorageUploader {
     for (int i = 0; i < images.length; i++) {
       final raw = images[i].trim();
       if (raw.isEmpty) continue;
-      final bytes = decodeDataUri(raw);
-      if (bytes == null) {
-        resolved.add(raw);
-        continue;
-      }
-
-      if (idToken == null || idToken.isEmpty || bucket.isEmpty) {
-        resolved.add(raw);
-        continue;
-      }
-
-      final objectPath =
-          'listings/$uid/${DateTime.now().millisecondsSinceEpoch}_$i.jpg';
-      final uploadUrl = Uri.parse(
-        'https://firebasestorage.googleapis.com/v0/b/$bucket/o'
-        '?uploadType=media&name=${Uri.encodeComponent(objectPath)}',
+      final uploaded = await _uploadSingleImage(
+        raw: raw,
+        objectPath:
+            'listings/$uid/${DateTime.now().millisecondsSinceEpoch}_$i.jpg',
+        idToken: idToken,
       );
-
-      try {
-        final response = await _client
-            .post(
-              uploadUrl,
-              headers: {
-                'Authorization': 'Bearer $idToken',
-                'Content-Type': 'image/jpeg',
-              },
-              body: bytes,
-            )
-            .timeout(const Duration(seconds: 20));
-
-        if (response.statusCode >= 200 && response.statusCode < 300) {
-          final jsonMap = jsonDecode(response.body) as Map<String, dynamic>;
-          final tokens = (jsonMap['downloadTokens'] as String?) ?? '';
-          final firstToken = tokens.split(',').first.trim();
-          resolved.add(
-            buildDownloadUrl(
-              bucket: bucket,
-              objectPath: objectPath,
-              downloadToken: firstToken.isEmpty ? null : firstToken,
-            ),
-          );
-        } else if (bytes.length <= 220 * 1024) {
-          resolved.add(raw);
-        }
-      } catch (_) {
-        if (bytes.length <= 220 * 1024) {
-          resolved.add(raw);
-        }
+      if (uploaded != null && uploaded.isNotEmpty) {
+        resolved.add(uploaded);
       }
     }
     return resolved;
+  }
+
+  /// Uploads a user's profile avatar to `profiles/{uid}/avatar_<ts>.jpg` and falls
+  /// back cleanly to a compact Data URI if Firebase Storage is not set up yet.
+  Future<String> uploadAvatarImage({
+    required String rawImage,
+    required String uid,
+    required String? idToken,
+  }) async {
+    final raw = rawImage.trim();
+    if (raw.isEmpty) return '';
+    final uploaded = await _uploadSingleImage(
+      raw: raw,
+      objectPath: 'profiles/$uid/avatar_${DateTime.now().millisecondsSinceEpoch}.jpg',
+      idToken: idToken,
+    );
+    return uploaded ?? '';
+  }
+
+  Future<String?> _uploadSingleImage({
+    required String raw,
+    required String objectPath,
+    required String? idToken,
+  }) async {
+    final bytes = decodeDataUri(raw);
+    if (bytes == null) {
+      return raw;
+    }
+
+    if (idToken == null || idToken.isEmpty || bucket.isEmpty) {
+      return bytes.length <= 220 * 1024 ? raw : null;
+    }
+
+    final uploadUrl = Uri.parse(
+      'https://firebasestorage.googleapis.com/v0/b/$bucket/o'
+      '?uploadType=media&name=${Uri.encodeComponent(objectPath)}',
+    );
+
+    try {
+      final response = await _client
+          .post(
+            uploadUrl,
+            headers: {
+              'Authorization': 'Bearer $idToken',
+              'Content-Type': 'image/jpeg',
+            },
+            body: bytes,
+          )
+          .timeout(const Duration(seconds: 20));
+
+      if (response.statusCode >= 200 && response.statusCode < 300) {
+        final jsonMap = jsonDecode(response.body) as Map<String, dynamic>;
+        final tokens = (jsonMap['downloadTokens'] as String?) ?? '';
+        final firstToken = tokens.split(',').first.trim();
+        return buildDownloadUrl(
+          bucket: bucket,
+          objectPath: objectPath,
+          downloadToken: firstToken.isEmpty ? null : firstToken,
+        );
+      }
+      if (bytes.length <= 220 * 1024) {
+        return raw;
+      }
+      return null;
+    } catch (_) {
+      if (bytes.length <= 220 * 1024) {
+        return raw;
+      }
+      return null;
+    }
   }
 }

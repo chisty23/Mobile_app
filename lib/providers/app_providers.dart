@@ -4,11 +4,13 @@ import 'dart:math' as math;
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 
 import '../firebase_options.dart';
 import '../models.dart';
 import '../services/backend_api.dart';
+import '../utils/formatters.dart';
 import '../utils/storage_uploader.dart';
 
 const List<String> _studentEmailSuffixes = [
@@ -87,6 +89,98 @@ class ThemeProvider extends ChangeNotifier {
   }
 }
 
+class PasswordResetOutcome {
+  final bool ok;
+  final String message;
+  final String deliveryTarget;
+  final bool viaPhone;
+
+  const PasswordResetOutcome({
+    required this.ok,
+    required this.message,
+    this.deliveryTarget = '',
+    this.viaPhone = false,
+  });
+}
+
+class ProfileDirectoryProvider extends ChangeNotifier {
+  final Map<String, PublicUserProfile> _profiles = {};
+  final Set<String> _inFlight = {};
+  StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _sub;
+
+  ProfileDirectoryProvider() {
+    _initStream();
+  }
+
+  void _initStream() {
+    try {
+      if (Firebase.apps.isEmpty) return;
+      _sub = FirebaseFirestore.instance
+          .collection('public_profiles')
+          .limit(250)
+          .snapshots()
+          .listen((snap) {
+        for (final doc in snap.docs) {
+          _profiles[doc.id] = PublicUserProfile.fromSnapshot(doc);
+        }
+        notifyListeners();
+      }, onError: (_) {});
+    } catch (_) {}
+  }
+
+  PublicUserProfile? profileFor(String uid) => _profiles[uid];
+
+  String photoFor(String uid, {String fallback = ''}) {
+    final p = _profiles[uid]?.photoUrl ?? '';
+    return p.isNotEmpty ? p : fallback;
+  }
+
+  String nameFor(String uid, {String fallback = ''}) {
+    final n = _profiles[uid]?.name ?? '';
+    return n.isNotEmpty ? n : fallback;
+  }
+
+  void upsertLocal(PublicUserProfile profile) {
+    _profiles[profile.uid] = profile;
+    notifyListeners();
+  }
+
+  Future<PublicUserProfile?> ensureLoaded(String uid) async {
+    if (uid.trim().isEmpty) return null;
+    if (_profiles.containsKey(uid)) return _profiles[uid];
+    if (_inFlight.contains(uid)) return null;
+    try {
+      if (Firebase.apps.isEmpty) return null;
+      _inFlight.add(uid);
+      final db = FirebaseFirestore.instance;
+      final pub = await db.collection('public_profiles').doc(uid).get();
+      if (pub.exists && pub.data() != null) {
+        final parsed = PublicUserProfile.fromSnapshot(pub);
+        _profiles[uid] = parsed;
+        notifyListeners();
+        return parsed;
+      }
+      final legacy = await db.collection('users').doc(uid).get();
+      if (legacy.exists && legacy.data() != null) {
+        final parsed = PublicUserProfile.fromMap(uid, legacy.data());
+        _profiles[uid] = parsed;
+        notifyListeners();
+        return parsed;
+      }
+    } catch (_) {
+    } finally {
+      _inFlight.remove(uid);
+    }
+    return null;
+  }
+
+  @override
+  void dispose() {
+    _sub?.cancel();
+    super.dispose();
+  }
+}
+
 class AuthProvider extends ChangeNotifier {
   final _auth = FirebaseAuth.instance;
   final _db = FirebaseFirestore.instance;
@@ -94,6 +188,8 @@ class AuthProvider extends ChangeNotifier {
   bool busy = false;
   String? error;
   bool guestMode = false;
+  ConfirmationResult? _webConfirmation;
+  String? _mobileVerificationId;
 
   User? get user => _auth.currentUser;
 
@@ -108,22 +204,88 @@ class AuthProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<bool> login(String email, String password) async {
+  Future<void> _syncPublicAndPhoneDirectory({
+    required String uid,
+    required Map<String, dynamic> userData,
+  }) async {
+    try {
+      await _db.collection('public_profiles').doc(uid).set({
+        'name': (userData['name'] as String?) ?? 'PassItOn Member',
+        'photoUrl': (userData['photoUrl'] as String?) ?? '',
+        'bio': (userData['bio'] as String?) ?? '',
+        'department': (userData['department'] as String?) ?? '',
+        'location': (userData['location'] as String?) ?? '',
+        'batchYear': (userData['batchYear'] as String?) ?? '',
+        'meetupSpot': (userData['meetupSpot'] as String?) ?? '',
+        'verifiedStudent': userData['verifiedStudent'] == true,
+        'phoneVerified': userData['phoneVerified'] == true,
+        'emailVerified': _auth.currentUser?.emailVerified == true,
+        'soldCount': (userData['soldCount'] as num?)?.toInt() ?? 0,
+        'boughtCount': (userData['boughtCount'] as num?)?.toInt() ?? 0,
+        'ratingSum': (userData['ratingSum'] as num?)?.toInt() ?? 0,
+        'ratingCount': (userData['ratingCount'] as num?)?.toInt() ?? 0,
+        'isBanned': userData['isBanned'] == true,
+        'updatedAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+
+      final normPhone = AppFormatters.normalizePhone(
+        (userData['phone'] as String?) ?? '',
+      );
+      final authEmail = ((userData['recoveryEmail'] as String?)?.trim().isNotEmpty == true
+              ? userData['recoveryEmail'] as String
+              : (userData['email'] as String?) ?? _auth.currentUser?.email ?? '')
+          .trim();
+      if (normPhone.isNotEmpty && authEmail.isNotEmpty) {
+        await _db.collection('phone_directory').doc(normPhone).set({
+          'uid': uid,
+          'authEmail': authEmail,
+          'maskedEmail': AppFormatters.maskEmail(authEmail),
+          'updatedAt': FieldValue.serverTimestamp(),
+        }, SetOptions(merge: true));
+      }
+    } catch (_) {}
+  }
+
+  Future<bool> login(String identifier, String password) async {
     busy = true;
     error = null;
     notifyListeners();
     try {
+      var authEmail = identifier.trim();
+      if (AppFormatters.looksLikePhone(authEmail)) {
+        final normPhone = AppFormatters.normalizePhone(authEmail);
+        final phoneDoc =
+            await _db.collection('phone_directory').doc(normPhone).get();
+        if (!phoneDoc.exists) {
+          error =
+              'No account found for phone $normPhone. Sign in with Gmail or create a new account.';
+          return false;
+        }
+        final resolvedEmail =
+            (phoneDoc.data()?['authEmail'] as String?)?.trim() ?? '';
+        if (resolvedEmail.isEmpty) {
+          error =
+              'This phone account uses SMS OTP verification. Tap "Verify via SMS OTP" to sign in.';
+          return false;
+        }
+        authEmail = resolvedEmail;
+      }
+
       final cred = await _auth.signInWithEmailAndPassword(
-        email: email.trim(),
+        email: authEmail,
         password: password,
       );
       final uid = cred.user?.uid;
       if (uid != null) {
         final doc = await _db.collection('users').doc(uid).get();
-        if (doc.data()?['isBanned'] == true) {
+        final data = doc.data();
+        if (data?['isBanned'] == true) {
           await _auth.signOut();
           error = 'This account has been suspended by marketplace moderation.';
           return false;
+        }
+        if (data != null) {
+          unawaited(_syncPublicAndPhoneDirectory(uid: uid, userData: data));
         }
       }
       guestMode = false;
@@ -131,6 +293,71 @@ class AuthProvider extends ChangeNotifier {
     } on FirebaseAuthException catch (e) {
       error = e.message ?? 'Login failed';
       return false;
+    } on FirebaseException catch (e) {
+      error = e.message ?? 'Could not sign in';
+      return false;
+    } finally {
+      busy = false;
+      notifyListeners();
+    }
+  }
+
+  Future<PasswordResetOutcome> sendPasswordResetByIdentifier(
+    String identifier,
+  ) async {
+    final trimmed = identifier.trim();
+    if (trimmed.isEmpty) {
+      error = 'Enter your Account Gmail or registered Phone Number';
+      notifyListeners();
+      return PasswordResetOutcome(ok: false, message: error!);
+    }
+    busy = true;
+    error = null;
+    notifyListeners();
+    try {
+      var targetEmail = trimmed;
+      var viaPhone = false;
+
+      if (AppFormatters.looksLikePhone(trimmed)) {
+        viaPhone = true;
+        final normPhone = AppFormatters.normalizePhone(trimmed);
+        final phoneDoc =
+            await _db.collection('phone_directory').doc(normPhone).get();
+        if (!phoneDoc.exists) {
+          error =
+              'No account is linked to $normPhone. Enter your Account Gmail or verify via SMS OTP.';
+          return PasswordResetOutcome(ok: false, message: error!);
+        }
+        final resolved =
+            (phoneDoc.data()?['authEmail'] as String?)?.trim() ?? '';
+        if (resolved.isEmpty || resolved.endsWith('@phone.passiton.app')) {
+          error =
+              'This phone number does not have an Account Gmail linked. Use SMS OTP Sign-In instead.';
+          return PasswordResetOutcome(ok: false, message: error!);
+        }
+        targetEmail = resolved;
+      } else if (!AppFormatters.isValidEmail(targetEmail)) {
+        error = 'Enter a valid Gmail address or phone number';
+        return PasswordResetOutcome(ok: false, message: error!);
+      }
+
+      await _auth.sendPasswordResetEmail(email: targetEmail);
+      final targetDisplay =
+          viaPhone ? AppFormatters.maskEmail(targetEmail) : targetEmail;
+      return PasswordResetOutcome(
+        ok: true,
+        viaPhone: viaPhone,
+        deliveryTarget: targetDisplay,
+        message: viaPhone
+            ? 'Verified phone! Password reset link sent to linked Gmail ($targetDisplay).'
+            : 'Password reset verification link sent to $targetDisplay.',
+      );
+    } on FirebaseAuthException catch (e) {
+      error = e.message ?? 'Could not send reset email';
+      return PasswordResetOutcome(ok: false, message: error!);
+    } on FirebaseException catch (e) {
+      error = e.message ?? 'Lookup failed';
+      return PasswordResetOutcome(ok: false, message: error!);
     } finally {
       busy = false;
       notifyListeners();
@@ -138,8 +365,93 @@ class AuthProvider extends ChangeNotifier {
   }
 
   Future<bool> sendPasswordReset(String email) async {
-    if (email.trim().isEmpty) {
-      error = 'Enter your email address to reset your password';
+    final outcome = await sendPasswordResetByIdentifier(email);
+    return outcome.ok;
+  }
+
+  /// Sends a Firebase SMS OTP verification code for Phone signup, login, or recovery.
+  Future<bool> sendPhoneOtp(
+    String rawPhone, {
+    bool linkToCurrentUser = false,
+  }) async {
+    final normPhone = AppFormatters.normalizePhone(rawPhone);
+    if (!AppFormatters.isValidPhone(normPhone)) {
+      error = 'Enter a valid phone number (e.g. 017XXXXXXXX or +8801XXXXXXXXX)';
+      notifyListeners();
+      return false;
+    }
+    busy = true;
+    error = null;
+    _webConfirmation = null;
+    _mobileVerificationId = null;
+    notifyListeners();
+    try {
+      if (kIsWeb) {
+        if (linkToCurrentUser && _auth.currentUser != null) {
+          _webConfirmation =
+              await _auth.currentUser!.linkWithPhoneNumber(normPhone);
+        } else {
+          _webConfirmation = await _auth.signInWithPhoneNumber(normPhone);
+        }
+        return true;
+      }
+
+      final completer = Completer<bool>();
+      await _auth.verifyPhoneNumber(
+        phoneNumber: normPhone,
+        verificationCompleted: (PhoneAuthCredential cred) async {
+          try {
+            if (linkToCurrentUser && _auth.currentUser != null) {
+              await _auth.currentUser!.linkWithCredential(cred);
+            } else {
+              await _auth.signInWithCredential(cred);
+            }
+          } catch (_) {}
+        },
+        verificationFailed: (FirebaseAuthException e) {
+          error = _mapPhoneAuthError(e);
+          if (!completer.isCompleted) completer.complete(false);
+        },
+        codeSent: (String verId, int? resendToken) {
+          _mobileVerificationId = verId;
+          if (!completer.isCompleted) completer.complete(true);
+        },
+        codeAutoRetrievalTimeout: (String verId) {
+          _mobileVerificationId = verId;
+        },
+      );
+      return await completer.future.timeout(
+        const Duration(seconds: 30),
+        onTimeout: () {
+          error ??= 'Timed out waiting for SMS OTP code';
+          return false;
+        },
+      );
+    } on FirebaseAuthException catch (e) {
+      error = _mapPhoneAuthError(e);
+      return false;
+    } catch (e) {
+      error = 'SMS verification unavailable right now: $e';
+      return false;
+    } finally {
+      busy = false;
+      notifyListeners();
+    }
+  }
+
+  /// Verifies an SMS OTP code to finish Phone login/recovery or link phone to current profile.
+  Future<bool> verifyPhoneOtp({
+    required String smsCode,
+    required String rawPhone,
+    String name = '',
+    String department = '',
+    String bio = '',
+    String recoveryGmail = '',
+    bool linkToCurrentUser = false,
+  }) async {
+    final code = smsCode.trim();
+    if (code.length < 4) {
+      error = 'Enter the 6-digit SMS code sent to your phone';
       notifyListeners();
       return false;
     }
@@ -147,15 +459,104 @@ class AuthProvider extends ChangeNotifier {
     error = null;
     notifyListeners();
     try {
-      await _auth.sendPasswordResetEmail(email: email.trim());
+      UserCredential? cred;
+      if (kIsWeb) {
+        if (_webConfirmation == null) {
+          error = 'Send the SMS verification code first';
+          return false;
+        }
+        cred = await _webConfirmation!.confirm(code);
+      } else {
+        if (_mobileVerificationId == null) {
+          error = 'Send the SMS verification code first';
+          return false;
+        }
+        final credential = PhoneAuthProvider.credential(
+          verificationId: _mobileVerificationId!,
+          smsCode: code,
+        );
+        if (linkToCurrentUser && _auth.currentUser != null) {
+          cred = await _auth.currentUser!.linkWithCredential(credential);
+        } else {
+          cred = await _auth.signInWithCredential(credential);
+        }
+      }
+
+      final user = cred.user ?? _auth.currentUser;
+      if (user == null) {
+        error = 'Could not verify phone number';
+        return false;
+      }
+
+      final normPhone = AppFormatters.normalizePhone(rawPhone);
+      final userRef = _db.collection('users').doc(user.uid);
+      final existingSnap = await userRef.get();
+      if (existingSnap.data()?['isBanned'] == true) {
+        await _auth.signOut();
+        error = 'This account has been suspended by marketplace moderation.';
+        return false;
+      }
+
+      final cleanGmail = recoveryGmail.trim();
+      final existingData = existingSnap.data() ?? <String, dynamic>{};
+      final resolvedName = name.trim().isNotEmpty
+          ? name.trim()
+          : (existingData['name'] as String?) ??
+              user.displayName ??
+              'PassItOn Member';
+      if (name.trim().isNotEmpty) {
+        await user.updateDisplayName(resolvedName);
+      }
+
+      final payload = <String, dynamic>{
+        'name': resolvedName,
+        'email': cleanGmail.isNotEmpty
+            ? cleanGmail
+            : (existingData['email'] as String?) ?? user.email ?? '',
+        if (cleanGmail.isNotEmpty) 'recoveryEmail': cleanGmail,
+        'phone': normPhone,
+        'phoneVerified': true,
+        'department': department.trim().isNotEmpty
+            ? department.trim()
+            : (existingData['department'] as String?) ?? '',
+        'bio': bio.trim().isNotEmpty
+            ? bio.trim()
+            : (existingData['bio'] as String?) ?? '',
+        if (!existingSnap.exists) ...{
+          'role': 'customer',
+          'isAdmin': false,
+          'isBanned': false,
+          'verifiedStudent': isVerifiedStudentEmail(cleanGmail),
+          'soldCount': 0,
+          'boughtCount': 0,
+          'ratingSum': 0,
+          'ratingCount': 0,
+          'photoUrl': '',
+          'createdAt': FieldValue.serverTimestamp(),
+        },
+        'updatedAt': FieldValue.serverTimestamp(),
+      };
+      await userRef.set(payload, SetOptions(merge: true));
+      await _syncPublicAndPhoneDirectory(
+        uid: user.uid,
+        userData: {...existingData, ...payload},
+      );
+      guestMode = false;
       return true;
     } on FirebaseAuthException catch (e) {
-      error = e.message ?? 'Could not send reset email';
+      error = _mapPhoneAuthError(e);
       return false;
     } finally {
       busy = false;
       notifyListeners();
     }
+  }
+
+  String _mapPhoneAuthError(FirebaseAuthException e) {
+    if (e.code == 'operation-not-allowed' || e.code == 'billing-not-enabled') {
+      return 'SMS OTP is not enabled in Firebase Console yet. Register/recover using Phone + Account Gmail or enable Phone provider in Firebase Console.';
+    }
+    return e.message ?? 'Phone verification failed (${e.code})';
   }
 
   Future<bool> sendEmailVerification() async {
@@ -181,11 +582,29 @@ class AuthProvider extends ChangeNotifier {
     if (current == null) return false;
     try {
       await current.reload();
+      final verified = _auth.currentUser?.emailVerified ?? false;
+      await _db.collection('public_profiles').doc(current.uid).set({
+        'emailVerified': verified,
+      }, SetOptions(merge: true));
       notifyListeners();
-      return _auth.currentUser?.emailVerified ?? false;
+      return verified;
     } catch (_) {
       return false;
     }
+  }
+
+  Future<String> _uploadAvatarIfNeeded(String uid, String rawPhoto) async {
+    final trimmed = rawPhoto.trim();
+    if (trimmed.isEmpty) return '';
+    if (!trimmed.startsWith('data:image')) return trimmed;
+    final token = await _auth.currentUser?.getIdToken();
+    final bucket = DefaultFirebaseOptions.currentPlatform.storageBucket ??
+        'pass-it-on-2f422.firebasestorage.app';
+    return StorageUploader(bucket: bucket).uploadAvatarImage(
+      rawImage: trimmed,
+      uid: uid,
+      idToken: token,
+    );
   }
 
   Future<bool> register({
@@ -194,22 +613,76 @@ class AuthProvider extends ChangeNotifier {
     required String password,
     String department = '',
     String phone = '',
+    String bio = '',
+    String location = '',
+    String batchYear = '',
+    String meetupSpot = '',
+    String photoRaw = '',
+    String accountMode = 'gmail',
   }) async {
     busy = true;
     error = null;
     notifyListeners();
     try {
-      final cleanEmail = email.trim();
+      final cleanEmail = email.trim().toLowerCase();
+      final normPhone = AppFormatters.normalizePhone(phone);
+
+      if (accountMode == 'gmail') {
+        if (!AppFormatters.isValidGmail(cleanEmail)) {
+          error = 'Please use a valid @gmail.com address to create an account';
+          return false;
+        }
+        if (phone.trim().isNotEmpty && !AppFormatters.isValidPhone(phone)) {
+          error = 'Enter a valid phone number (e.g. 017XXXXXXXX)';
+          return false;
+        }
+      } else {
+        if (!AppFormatters.isValidPhone(phone)) {
+          error = 'Please enter a valid phone number (e.g. 017XXXXXXXX)';
+          return false;
+        }
+        if (!AppFormatters.isValidGmail(cleanEmail)) {
+          error =
+              'Enter your Account Gmail (@gmail.com) so password recovery links can reach you, or switch to SMS OTP';
+          return false;
+        }
+      }
+
+      if (normPhone.isNotEmpty) {
+        final existingPhone =
+            await _db.collection('phone_directory').doc(normPhone).get();
+        if (existingPhone.exists) {
+          error = 'This phone number is already linked to another account.';
+          return false;
+        }
+      }
+
       final credential = await _auth.createUserWithEmailAndPassword(
         email: cleanEmail,
         password: password,
       );
-      await credential.user?.updateDisplayName(name.trim());
-      await _db.collection('users').doc(credential.user!.uid).set({
+      final user = credential.user!;
+      await user.updateDisplayName(name.trim());
+
+      final resolvedPhoto = photoRaw.trim().isNotEmpty
+          ? await _uploadAvatarIfNeeded(user.uid, photoRaw)
+          : '';
+      if (resolvedPhoto.startsWith('http') && resolvedPhoto.length < 1800) {
+        await user.updatePhotoURL(resolvedPhoto);
+      }
+
+      final userData = <String, dynamic>{
         'name': name.trim(),
         'email': cleanEmail,
+        'recoveryEmail': cleanEmail,
         'department': department.trim(),
-        'phone': phone.trim(),
+        'phone': normPhone,
+        'phoneVerified': false,
+        'bio': bio.trim(),
+        'location': location.trim(),
+        'batchYear': batchYear.trim(),
+        'meetupSpot': meetupSpot.trim(),
+        'photoUrl': resolvedPhoto,
         'role': 'customer',
         'isAdmin': false,
         'isBanned': false,
@@ -219,14 +692,196 @@ class AuthProvider extends ChangeNotifier {
         'ratingSum': 0,
         'ratingCount': 0,
         'createdAt': FieldValue.serverTimestamp(),
-      });
+        'updatedAt': FieldValue.serverTimestamp(),
+      };
+
+      await _db.collection('users').doc(user.uid).set(userData);
+      await _syncPublicAndPhoneDirectory(uid: user.uid, userData: userData);
+
       try {
-        await credential.user?.sendEmailVerification();
+        await user.sendEmailVerification();
       } catch (_) {}
       guestMode = false;
       return true;
     } on FirebaseAuthException catch (e) {
       error = e.message ?? 'Registration failed';
+      return false;
+    } on FirebaseException catch (e) {
+      error = e.message ?? 'Could not save user profile';
+      return false;
+    } finally {
+      busy = false;
+      notifyListeners();
+    }
+  }
+
+  /// Updates the signed-in user's profile picture and rich marketplace bio details.
+  Future<bool> updateProfile({
+    required String name,
+    String bio = '',
+    String department = '',
+    String phone = '',
+    String location = '',
+    String batchYear = '',
+    String meetupSpot = '',
+    String photoRaw = '',
+    bool removePhoto = false,
+    String previousPhone = '',
+    String recoveryGmail = '',
+    ProfileDirectoryProvider? directory,
+  }) async {
+    final current = _auth.currentUser;
+    if (current == null) {
+      error = 'You must be signed in to update your profile';
+      notifyListeners();
+      return false;
+    }
+    if (name.trim().length < 2) {
+      error = 'Full name must be at least 2 characters';
+      notifyListeners();
+      return false;
+    }
+
+    final normPhone =
+        phone.trim().isEmpty ? '' : AppFormatters.normalizePhone(phone);
+    if (phone.trim().isNotEmpty && !AppFormatters.isValidPhone(phone)) {
+      error = 'Enter a valid phone number (e.g. 017XXXXXXXX)';
+      notifyListeners();
+      return false;
+    }
+
+    final cleanRecovery = recoveryGmail.trim().toLowerCase();
+    if (cleanRecovery.isNotEmpty && !AppFormatters.isValidGmail(cleanRecovery)) {
+      error = 'Recovery / Account Gmail must be a valid @gmail.com address';
+      notifyListeners();
+      return false;
+    }
+
+    busy = true;
+    error = null;
+    notifyListeners();
+    try {
+      final oldNorm = AppFormatters.normalizePhone(previousPhone);
+      if (normPhone.isNotEmpty && normPhone != oldNorm) {
+        final clash =
+            await _db.collection('phone_directory').doc(normPhone).get();
+        if (clash.exists && clash.data()?['uid'] != current.uid) {
+          error = 'This phone number is already registered by another member.';
+          return false;
+        }
+      }
+
+      final userRef = _db.collection('users').doc(current.uid);
+      final existingSnap = await userRef.get();
+      final existing = existingSnap.data() ?? <String, dynamic>{};
+
+      String nextPhoto = (existing['photoUrl'] as String?) ?? '';
+      if (removePhoto) {
+        nextPhoto = '';
+      } else if (photoRaw.trim().isNotEmpty) {
+        nextPhoto = await _uploadAvatarIfNeeded(current.uid, photoRaw);
+      }
+
+      await current.updateDisplayName(name.trim());
+      if (removePhoto) {
+        await current.updatePhotoURL(null);
+      } else if (nextPhoto.startsWith('http') && nextPhoto.length < 1800) {
+        await current.updatePhotoURL(nextPhoto);
+      }
+
+      final phoneChanged = normPhone != oldNorm;
+      final effectiveRecovery = cleanRecovery.isNotEmpty
+          ? cleanRecovery
+          : (existing['recoveryEmail'] as String?) ??
+              (current.email ?? '');
+
+      final updateMap = <String, dynamic>{
+        'name': name.trim(),
+        'bio': bio.trim(),
+        'department': department.trim(),
+        'phone': normPhone,
+        'phoneVerified':
+            phoneChanged ? false : (existing['phoneVerified'] == true),
+        'location': location.trim(),
+        'batchYear': batchYear.trim(),
+        'meetupSpot': meetupSpot.trim(),
+        'photoUrl': nextPhoto,
+        if (effectiveRecovery.isNotEmpty) 'recoveryEmail': effectiveRecovery,
+        'updatedAt': FieldValue.serverTimestamp(),
+      };
+
+      await userRef.set(updateMap, SetOptions(merge: true));
+
+      if (oldNorm.isNotEmpty && oldNorm != normPhone) {
+        try {
+          final oldDoc =
+              await _db.collection('phone_directory').doc(oldNorm).get();
+          if (oldDoc.exists && oldDoc.data()?['uid'] == current.uid) {
+            await oldDoc.reference.delete();
+          }
+        } catch (_) {}
+      }
+
+      final mergedData = {...existing, ...updateMap};
+      await _syncPublicAndPhoneDirectory(
+        uid: current.uid,
+        userData: mergedData,
+      );
+
+      directory?.upsertLocal(
+        PublicUserProfile.fromMap(current.uid, mergedData),
+      );
+      return true;
+    } on FirebaseException catch (e) {
+      error = e.message ?? 'Could not save profile updates';
+      return false;
+    } finally {
+      busy = false;
+      notifyListeners();
+    }
+  }
+
+  /// Sends a verification link to update Firebase Auth's sign-in / Account Gmail.
+  Future<bool> updateAccountGmail({
+    required String newGmail,
+    String currentPassword = '',
+  }) async {
+    final current = _auth.currentUser;
+    if (current == null) return false;
+    final clean = newGmail.trim().toLowerCase();
+    if (!AppFormatters.isValidGmail(clean)) {
+      error = 'Please enter a valid @gmail.com address';
+      notifyListeners();
+      return false;
+    }
+    busy = true;
+    error = null;
+    notifyListeners();
+    try {
+      if (currentPassword.isNotEmpty && current.email != null) {
+        final cred = EmailAuthProvider.credential(
+          email: current.email!,
+          password: currentPassword,
+        );
+        await current.reauthenticateWithCredential(cred);
+      }
+      await current.verifyBeforeUpdateEmail(clean);
+      await _db.collection('users').doc(current.uid).set({
+        'recoveryEmail': clean,
+        'updatedAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+      final snap = await _db.collection('users').doc(current.uid).get();
+      if (snap.data() != null) {
+        await _syncPublicAndPhoneDirectory(
+          uid: current.uid,
+          userData: snap.data()!,
+        );
+      }
+      return true;
+    } on FirebaseAuthException catch (e) {
+      error = e.code == 'requires-recent-login'
+          ? 'Enter your current password to confirm updating your Account Gmail.'
+          : (e.message ?? 'Could not update Gmail');
       return false;
     } finally {
       busy = false;
@@ -304,6 +959,14 @@ class AuthProvider extends ChangeNotifier {
         for (final doc in favs.docs) {
           batch.delete(doc.reference);
         }
+        final phones = await _db
+            .collection('phone_directory')
+            .where('uid', isEqualTo: uid)
+            .get();
+        for (final doc in phones.docs) {
+          batch.delete(doc.reference);
+        }
+        batch.delete(_db.collection('public_profiles').doc(uid));
         batch.delete(_db.collection('users').doc(uid));
         await batch.commit();
         await current.delete();
@@ -324,6 +987,36 @@ class AuthProvider extends ChangeNotifier {
   Future<void> logout() async {
     guestMode = false;
     await _auth.signOut();
+  }
+}
+
+Future<({String name, String photoUrl})> _fetchMemberSnapshot(
+  FirebaseFirestore db,
+  String uid,
+  String fallbackName,
+) async {
+  if (uid.trim().isEmpty) return (name: fallbackName, photoUrl: '');
+  try {
+    final pub = await db.collection('public_profiles').doc(uid).get();
+    if (pub.exists && pub.data() != null) {
+      final d = pub.data()!;
+      return (
+        name: (d['name'] as String?)?.trim().isNotEmpty == true
+            ? (d['name'] as String).trim()
+            : fallbackName,
+        photoUrl: (d['photoUrl'] as String?) ?? '',
+      );
+    }
+    final userDoc = await db.collection('users').doc(uid).get();
+    final d = userDoc.data() ?? const <String, dynamic>{};
+    return (
+      name: (d['name'] as String?)?.trim().isNotEmpty == true
+          ? (d['name'] as String).trim()
+          : fallbackName,
+      photoUrl: (d['photoUrl'] as String?) ?? '',
+    );
+  } catch (_) {
+    return (name: fallbackName, photoUrl: '');
   }
 }
 
@@ -622,6 +1315,64 @@ class ListingProvider extends ChangeNotifier {
     return true;
   }
 
+  Stream<List<ListingComment>> commentsStream(String listingId) {
+    return _db
+        .collection('listings')
+        .doc(listingId)
+        .collection('comments')
+        .orderBy('createdAt', descending: false)
+        .limit(80)
+        .snapshots()
+        .map(
+          (snap) => snap.docs
+              .map((d) => ListingComment.fromSnapshot(d, listingId: listingId))
+              .toList(),
+        );
+  }
+
+  Future<bool> addComment({
+    required Listing listing,
+    required String text,
+  }) async {
+    final user = FirebaseAuth.instance.currentUser;
+    final clean = text.trim();
+    if (user == null || clean.isEmpty) return false;
+    try {
+      final meta = await _fetchMemberSnapshot(
+        _db,
+        user.uid,
+        user.displayName ?? 'Campus Member',
+      );
+      await _db
+          .collection('listings')
+          .doc(listing.id)
+          .collection('comments')
+          .add({
+        'listingId': listing.id,
+        'authorId': user.uid,
+        'authorName': meta.name,
+        'authorPhotoUrl': meta.photoUrl,
+        'isSeller': user.uid == listing.sellerId,
+        'text': clean,
+        'createdAt': FieldValue.serverTimestamp(),
+      });
+      return true;
+    } on FirebaseException catch (e) {
+      error = e.message ?? 'Could not post comment';
+      notifyListeners();
+      return false;
+    }
+  }
+
+  Future<void> deleteComment(String listingId, String commentId) async {
+    await _db
+        .collection('listings')
+        .doc(listingId)
+        .collection('comments')
+        .doc(commentId)
+        .delete();
+  }
+
   @override
   void dispose() {
     _searchDebounce?.cancel();
@@ -751,11 +1502,11 @@ class SellProvider extends ChangeNotifier {
         }
         // Spark-plan fallback when Cloud Functions are not deployed yet.
         final user = FirebaseAuth.instance.currentUser!;
-        final profile = await _db.collection('users').doc(user.uid).get();
-        final name =
-            (profile.data()?['name'] as String?) ??
-            user.displayName ??
-            'Unknown user';
+        final meta = await _fetchMemberSnapshot(
+          _db,
+          user.uid,
+          user.displayName ?? 'Unknown user',
+        );
         final keywords = title
             .toLowerCase()
             .replaceAll(RegExp(r'[^\w\s]'), '')
@@ -776,7 +1527,8 @@ class SellProvider extends ChangeNotifier {
           'imageUrl': resolvedImages.first,
           'images': resolvedImages,
           'sellerId': user.uid,
-          'sellerName': name,
+          'sellerName': meta.name,
+          'sellerPhotoUrl': meta.photoUrl,
           'status': 'available',
           'reservedFor': '',
           'statsCounted': false,
@@ -1204,6 +1956,16 @@ class OfferProvider extends ChangeNotifier {
         }
         // Spark-plan fallback when Cloud Functions are not deployed yet.
         final uid = user.uid;
+        final buyerMeta = await _fetchMemberSnapshot(
+          _db,
+          uid,
+          user.displayName ?? 'Buyer',
+        );
+        final sellerMeta = await _fetchMemberSnapshot(
+          _db,
+          listing.sellerId,
+          listing.sellerName,
+        );
         final offerRef = _db.collection('offers').doc('${listing.id}_$uid');
         final existing = (await offerRef.get()).data();
         final historyEntry = {
@@ -1218,8 +1980,13 @@ class OfferProvider extends ChangeNotifier {
           'listingId': listing.id,
           'listingTitle': listing.title,
           'sellerId': listing.sellerId,
+          'sellerName': sellerMeta.name,
+          'sellerPhotoUrl': sellerMeta.photoUrl.isNotEmpty
+              ? sellerMeta.photoUrl
+              : listing.sellerPhotoUrl,
           'buyerId': uid,
-          'buyerName': user.displayName ?? 'Buyer',
+          'buyerName': buyerMeta.name,
+          'buyerPhotoUrl': buyerMeta.photoUrl,
           'amount': amount,
           'lastUpdatedBy': uid,
           'history': existing == null
@@ -1512,7 +2279,11 @@ class RatingProvider extends ChangeNotifier {
         try {
           final user = FirebaseAuth.instance.currentUser!;
           final buyerId = user.uid;
-          final buyerName = user.displayName ?? 'Verified Buyer';
+          final buyerMeta = await _fetchMemberSnapshot(
+            _db,
+            buyerId,
+            user.displayName ?? 'Verified Buyer',
+          );
           await _db.runTransaction((transaction) async {
             final ratingRef = _db.collection('ratings').doc(listingId);
             final ratingSnap = await transaction.get(ratingRef);
@@ -1525,7 +2296,8 @@ class RatingProvider extends ChangeNotifier {
             transaction.set(ratingRef, {
               'sellerId': sellerId,
               'buyerId': buyerId,
-              'buyerName': buyerName,
+              'buyerName': buyerMeta.name,
+              'buyerPhotoUrl': buyerMeta.photoUrl,
               'stars': stars,
               'comment': comment.trim(),
               'createdAt': FieldValue.serverTimestamp(),
@@ -1699,15 +2471,21 @@ class ChatProvider extends ChangeNotifier {
     sending = true;
     notifyListeners();
     try {
+      final buyerMeta = await _fetchMemberSnapshot(_db, buyerId, buyerName);
+      final sellerMeta = await _fetchMemberSnapshot(_db, sellerId, sellerName);
+      final senderMeta = user.uid == buyerId ? buyerMeta : sellerMeta;
+
       final threadRef = _db.collection('chats').doc(threadId);
       await threadRef.set({
         'listingId': listingId,
         'listingTitle': listingTitle,
         'listingPrice': listingPrice,
         'buyerId': buyerId,
-        'buyerName': buyerName,
+        'buyerName': buyerMeta.name,
+        'buyerPhotoUrl': buyerMeta.photoUrl,
         'sellerId': sellerId,
-        'sellerName': sellerName,
+        'sellerName': sellerMeta.name,
+        'sellerPhotoUrl': sellerMeta.photoUrl,
         'participants': [buyerId, sellerId],
         'lastMessage': clean,
         'updatedAt': FieldValue.serverTimestamp(),
@@ -1715,7 +2493,8 @@ class ChatProvider extends ChangeNotifier {
 
       await threadRef.collection('messages').add({
         'senderId': user.uid,
-        'senderName': user.displayName ?? 'Member',
+        'senderName': senderMeta.name,
+        'senderPhotoUrl': senderMeta.photoUrl,
         'text': clean,
         'createdAt': FieldValue.serverTimestamp(),
       });

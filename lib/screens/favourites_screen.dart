@@ -7,6 +7,7 @@ import '../utils/app_typography.dart';
 import '../utils/formatters.dart';
 import '../widgets/animated_ui.dart';
 import '../widgets/smart_image.dart';
+import '../widgets/user_avatar.dart';
 import 'browse_screen.dart';
 
 class FavouritesScreen extends StatefulWidget {
@@ -276,13 +277,22 @@ class _FavouriteItemCard extends StatelessWidget {
                   const SizedBox(height: 4),
                   Row(
                     children: [
-                      const Icon(Icons.sell_outlined, size: 12, color: Color(0xFF858A99)),
-                      const SizedBox(width: 4),
-                      Text(
-                        '${listing.category} · ${listing.condition}',
-                        style: TextStyle(
-                          color: isDark ? Colors.grey.shade400 : const Color(0xFF858A99),
-                          fontSize: 12,
+                      UserAvatar(
+                        uid: listing.sellerId,
+                        name: listing.sellerName,
+                        photoUrl: listing.sellerPhotoUrl,
+                        radius: 9,
+                      ),
+                      const SizedBox(width: 6),
+                      Expanded(
+                        child: Text(
+                          '${listing.sellerName} · ${listing.category} · ${listing.condition}',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            color: isDark ? Colors.grey.shade400 : const Color(0xFF858A99),
+                            fontSize: 12,
+                          ),
                         ),
                       ),
                     ],

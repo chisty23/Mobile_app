@@ -61,6 +61,15 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    match /phone_directory/{phoneKey} {
+      allow get: if true;
+      allow list: if false;
+      allow create, update: if signedIn()
+        && request.resource.data.uid == request.auth.uid
+        && isNotBanned();
+      allow delete: if isAdmin() || (signedIn() && resource.data.uid == request.auth.uid);
+    }
+
     match /listings/{listingId} {
       allow read: if true;
       allow create: if isNotBanned()
@@ -81,6 +90,20 @@ service cloud.firestore {
           || (resource.data.status == 'reserved' && request.resource.data.status == 'available')
         ));
       allow delete: if isAdmin() || (isNotBanned() && resource.data.sellerId == request.auth.uid);
+
+      match /comments/{commentId} {
+        allow read: if true;
+        allow create: if isNotBanned()
+          && request.resource.data.authorId == request.auth.uid
+          && request.resource.data.text is string
+          && request.resource.data.text.size() > 0
+          && request.resource.data.text.size() <= 800;
+        allow update: if false;
+        allow delete: if isAdmin() || (isNotBanned() && (
+          resource.data.authorId == request.auth.uid
+          || get(/databases/$(database)/documents/listings/$(listingId)).data.sellerId == request.auth.uid
+        ));
+      }
     }
 
     match /offers/{offerId} {

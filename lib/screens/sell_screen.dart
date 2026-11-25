@@ -1,3 +1,4 @@
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -9,6 +10,7 @@ import '../utils/photo_picker.dart';
 import '../widgets/animated_ui.dart';
 import '../widgets/payment_checkout_sheet.dart';
 import '../widgets/smart_image.dart';
+import '../widgets/user_avatar.dart';
 
 class SellScreen extends StatelessWidget {
   const SellScreen({super.key});
@@ -59,14 +61,43 @@ class SellScreen extends StatelessWidget {
                                     ),
                                   ),
                                   const SizedBox(height: 2),
-                                  Text(
-                                    'Manage prices, photos, and availability',
-                                    style: TextStyle(
-                                      color: isDark
-                                          ? Colors.grey.shade400
-                                          : const Color(0xFF6A7080),
-                                      fontSize: 13,
-                                    ),
+                                  Builder(
+                                    builder: (context) {
+                                      final me = FirebaseAuth.instance.currentUser;
+                                      final dir = context.watch<ProfileDirectoryProvider>();
+                                      final myName = me == null
+                                          ? 'Manage prices & photos'
+                                          : dir.nameFor(
+                                              me.uid,
+                                              fallback: me.displayName ?? 'Seller',
+                                            );
+                                      return Row(
+                                        children: [
+                                          if (me != null) ...[
+                                            UserAvatar(
+                                              uid: me.uid,
+                                              name: myName,
+                                              radius: 10,
+                                            ),
+                                            const SizedBox(width: 6),
+                                          ],
+                                          Flexible(
+                                            child: Text(
+                                              me == null
+                                                  ? 'Manage prices, photos, and availability'
+                                                  : 'Posting as $myName · Manage items',
+                                              overflow: TextOverflow.ellipsis,
+                                              style: TextStyle(
+                                                color: isDark
+                                                    ? Colors.grey.shade400
+                                                    : const Color(0xFF6A7080),
+                                                fontSize: 13,
+                                              ),
+                                            ),
+                                          ),
+                                        ],
+                                      );
+                                    },
                                   ),
                                 ],
                               ),
@@ -575,15 +606,44 @@ class _CreateListingSheetState extends State<CreateListingSheet> {
                             isEditing ? 'Edit Listing' : 'Create a Listing',
                             style: AppTypography.display(size: 24),
                           ),
-                          const SizedBox(height: 2),
-                          Text(
-                            isEditing
-                                ? 'Update item details, pricing, or photos.'
-                                : 'Upload up to 3 clear photos to earn buyer trust.',
-                            style: TextStyle(
-                              color: isDark ? Colors.grey.shade400 : const Color(0xFF777D8E),
-                              fontSize: 12.5,
-                            ),
+                          const SizedBox(height: 3),
+                          Builder(
+                            builder: (context) {
+                              final me = FirebaseAuth.instance.currentUser;
+                              final dir = context.watch<ProfileDirectoryProvider>();
+                              final myName = me == null
+                                  ? 'Seller'
+                                  : dir.nameFor(
+                                      me.uid,
+                                      fallback: me.displayName ?? 'Seller',
+                                    );
+                              return Row(
+                                children: [
+                                  if (me != null) ...[
+                                    UserAvatar(
+                                      uid: me.uid,
+                                      name: myName,
+                                      radius: 10,
+                                    ),
+                                    const SizedBox(width: 6),
+                                  ],
+                                  Flexible(
+                                    child: Text(
+                                      isEditing
+                                          ? 'Update item details, pricing, or photos.'
+                                          : 'Posting publicly as $myName · Up to 3 photos.',
+                                      overflow: TextOverflow.ellipsis,
+                                      style: TextStyle(
+                                        color: isDark
+                                            ? Colors.grey.shade400
+                                            : const Color(0xFF777D8E),
+                                        fontSize: 12.5,
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              );
+                            },
                           ),
                         ],
                       ),

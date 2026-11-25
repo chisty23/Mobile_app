@@ -412,4 +412,89 @@ void main() {
       expect(AppTypography.brand().fontFamily, 'Italiana');
     });
   });
+
+  group('Phone/Gmail Validation, Profiles & Avatar Tests', () {
+    test('Phone normalization, validation, and masking work accurately', () {
+      expect(AppFormatters.normalizePhone('01712345678'), '+8801712345678');
+      expect(AppFormatters.normalizePhone('8801812345678'), '+8801812345678');
+      expect(AppFormatters.normalizePhone('+880 1912-345678'), '+8801912345678');
+
+      expect(AppFormatters.isValidPhone('01712345678'), isTrue);
+      expect(AppFormatters.isValidPhone('+14155552671'), isTrue);
+      expect(AppFormatters.isValidPhone('1234'), isFalse);
+
+      expect(AppFormatters.looksLikePhone('01712345678'), isTrue);
+      expect(AppFormatters.looksLikePhone('alice@gmail.com'), isFalse);
+
+      expect(AppFormatters.maskEmail('moinchisty13@gmail.com'), 'mo***@gmail.com');
+      expect(AppFormatters.maskPhone('01712345678'), '+880****5678');
+    });
+
+    test('Gmail validator enforces @gmail.com / @googlemail.com', () {
+      expect(AppFormatters.isValidGmail('user.name+1@gmail.com'), isTrue);
+      expect(AppFormatters.isValidGmail('STUDENT@GOOGLEMAIL.COM'), isTrue);
+      expect(AppFormatters.isValidGmail('user@yahoo.com'), isFalse);
+      expect(AppFormatters.isValidGmail('admin@passiton.com'), isFalse);
+      expect(AppFormatters.isValidEmail('admin@passiton.com'), isTrue);
+    });
+
+    test('PublicUserProfile computes completion percent and ProfileDirectoryProvider caches safely', () {
+      final incomplete = PublicUserProfile.fromMap('u1', {
+        'name': 'Tariq Hasan',
+      });
+      expect(incomplete.completionPercent, 20);
+
+      final complete = PublicUserProfile.fromMap('u2', {
+        'name': 'Nusrat Jahan',
+        'photoUrl': 'https://cdn.example.com/avatar.jpg',
+        'bio': 'Final year EEE student',
+        'department': 'BUET EEE',
+        'location': 'BUET Campus',
+        'meetupSpot': 'Main Gate',
+        'ratingSum': 14,
+        'ratingCount': 3,
+      });
+      expect(complete.completionPercent, 100);
+      expect(complete.averageRating, closeTo(4.66, 0.02));
+
+      final dir = ProfileDirectoryProvider();
+      dir.upsertLocal(complete);
+      expect(dir.photoFor('u2'), 'https://cdn.example.com/avatar.jpg');
+      expect(dir.nameFor('u2'), 'Nusrat Jahan');
+    });
+
+    test('StorageUploader uploads avatar under profiles/{uid}/', () async {
+      Uri? capturedUri;
+      final mockClient = MockClient((request) async {
+        capturedUri = request.url;
+        return http.Response(jsonEncode({'downloadTokens': 'tok_av_1'}), 200);
+      });
+
+      final uploader = StorageUploader(client: mockClient);
+      final dataUri = 'data:image/jpeg;base64,${base64Encode([5, 6, 7, 8])}';
+      final url = await uploader.uploadAvatarImage(
+        rawImage: dataUri,
+        uid: 'u_avatar',
+        idToken: 'tok_user',
+      );
+
+      expect(capturedUri.toString(), contains('profiles%2Fu_avatar%2Favatar_'));
+      expect(url, contains('token=tok_av_1'));
+    });
+
+    test('ListingComment and avatar fields serialize properly', () {
+      final comment = ListingComment(
+        id: 'c1',
+        listingId: 'l1',
+        authorId: 'u9',
+        authorName: 'Sadia',
+        authorPhotoUrl: 'https://example.com/sadia.jpg',
+        text: 'Does it include original box?',
+        isSeller: false,
+        createdAt: DateTime.now(),
+      );
+      expect(comment.authorPhotoUrl, 'https://example.com/sadia.jpg');
+      expect(comment.isSeller, isFalse);
+    });
+  });
 }
