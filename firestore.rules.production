@@ -10,23 +10,37 @@ service cloud.firestore {
       return signedIn() && request.auth.uid == userId;
     }
 
+    function userExists(uid) {
+      return exists(/databases/$(database)/documents/users/$(uid));
+    }
+
     function userDoc(uid) {
       return get(/databases/$(database)/documents/users/$(uid)).data;
     }
 
     function isAdmin() {
-      return signedIn() && (
-        userDoc(request.auth.uid).role == 'admin'
-        || userDoc(request.auth.uid).isAdmin == true
-      );
+      return signedIn()
+        && userExists(request.auth.uid)
+        && (
+          userDoc(request.auth.uid).get('role', 'customer') == 'admin'
+          || userDoc(request.auth.uid).get('isAdmin', false) == true
+        );
     }
 
     function isNotBanned() {
-      return signedIn() && userDoc(request.auth.uid).isBanned != true;
+      return signedIn() && (
+        !userExists(request.auth.uid)
+        || userDoc(request.auth.uid).get('isBanned', false) != true
+      );
     }
 
     function unchanged(field) {
-      return !(field in request.resource.data) || request.resource.data[field] == resource.data[field];
+      return !(field in request.resource.data)
+        || ((field in resource.data) && request.resource.data[field] == resource.data[field]);
+    }
+
+    function chatExists(threadId) {
+      return exists(/databases/$(database)/documents/chats/$(threadId));
     }
 
     match /users/{userId} {
@@ -149,17 +163,24 @@ service cloud.firestore {
 
     match /chats/{threadId} {
       allow create: if isNotBanned()
-        && request.auth.uid in request.resource.data.participants;
-      allow read, update: if isAdmin() || (isNotBanned()
-        && request.auth.uid in resource.data.participants);
+        && request.auth.uid in request.resource.data.get('participants', []);
+      allow read: if isAdmin() || (signedIn() && (
+        resource == null
+        || request.auth.uid in resource.data.get('participants', [])
+      ));
+      allow update: if isAdmin() || (isNotBanned()
+        && request.auth.uid in resource.data.get('participants', []));
       allow delete: if isAdmin();
 
       match /messages/{msgId} {
-        allow read: if isAdmin() || (signedIn()
-          && request.auth.uid in get(/databases/$(database)/documents/chats/$(threadId)).data.participants);
+        allow read: if isAdmin() || (signedIn() && (
+          !chatExists(threadId)
+          || request.auth.uid in get(/databases/$(database)/documents/chats/$(threadId)).data.get('participants', [])
+        ));
         allow create: if isNotBanned()
           && request.resource.data.senderId == request.auth.uid
-          && request.auth.uid in get(/databases/$(database)/documents/chats/$(threadId)).data.participants;
+          && chatExists(threadId)
+          && request.auth.uid in get(/databases/$(database)/documents/chats/$(threadId)).data.get('participants', []);
         allow update, delete: if false;
       }
     }

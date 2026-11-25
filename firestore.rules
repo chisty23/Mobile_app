@@ -9,33 +9,47 @@ service cloud.firestore {
       return signedIn() && request.auth.uid == userId;
     }
 
+    function userExists(uid) {
+      return exists(/databases/$(database)/documents/users/$(uid));
+    }
+
     function userDoc(uid) {
       return get(/databases/$(database)/documents/users/$(uid)).data;
     }
 
     function isAdmin() {
-      return signedIn() && (
-        userDoc(request.auth.uid).role == 'admin'
-        || userDoc(request.auth.uid).isAdmin == true
-      );
+      return signedIn()
+        && userExists(request.auth.uid)
+        && (
+          userDoc(request.auth.uid).get('role', 'customer') == 'admin'
+          || userDoc(request.auth.uid).get('isAdmin', false) == true
+        );
     }
 
     function isNotBanned() {
-      return signedIn() && userDoc(request.auth.uid).isBanned != true;
+      return signedIn() && (
+        !userExists(request.auth.uid)
+        || userDoc(request.auth.uid).get('isBanned', false) != true
+      );
     }
 
     function unchanged(field) {
-      return !(field in request.resource.data) || request.resource.data[field] == resource.data[field];
+      return !(field in request.resource.data)
+        || ((field in resource.data) && request.resource.data[field] == resource.data[field]);
+    }
+
+    function chatExists(threadId) {
+      return exists(/databases/$(database)/documents/chats/$(threadId));
     }
 
     // Active Rules (Spark + Blaze Compatible).
-    // Once upgraded to Blaze and `functions/` deployed, replace with `firestore.rules.production`.
+    // Once upgraded to Blaze and `functions/` deployed, update with strict Blaze rules.
     match /users/{userId} {
       allow read: if signedIn();
       allow create: if isOwner(userId)
-        && request.resource.data.role == 'customer'
-        && request.resource.data.isAdmin == false
-        && (!('isBanned' in request.resource.data) || request.resource.data.isBanned == false);
+        && request.resource.data.get('role', 'customer') == 'customer'
+        && request.resource.data.get('isAdmin', false) == false
+        && request.resource.data.get('isBanned', false) != true;
       allow update: if isAdmin() || (isOwner(userId)
         && unchanged('role')
         && unchanged('isAdmin')
@@ -55,7 +69,7 @@ service cloud.firestore {
       allow read: if true;
       allow create, update: if isOwner(userId)
         && isNotBanned()
-        && (!('isBanned' in request.resource.data) || request.resource.data.isBanned == false);
+        && request.resource.data.get('isBanned', false) != true;
       allow delete: if isOwner(userId) || isAdmin();
     }
 
@@ -65,7 +79,7 @@ service cloud.firestore {
       allow create, update: if signedIn()
         && request.resource.data.uid == request.auth.uid
         && isNotBanned();
-      allow delete: if isAdmin() || (signedIn() && resource.data.uid == request.auth.uid);
+      allow delete: if isAdmin() || (signedIn() && resource.data.get('uid', '') == request.auth.uid);
     }
 
     match /listings/{listingId} {
@@ -77,11 +91,15 @@ service cloud.firestore {
         && request.resource.data.price > 0;
       allow update: if isAdmin() || (isNotBanned()
         && unchanged('sellerId')
-        && (resource.data.sellerId == request.auth.uid
-          || (resource.data.status == 'available'
+        && (resource.data.get('sellerId', '') == request.auth.uid
+          || (resource.data.get('status', '') == 'available'
             && request.resource.data.status == 'reserved'
-            && request.resource.data.reservedFor == request.auth.uid)));
-      allow delete: if isAdmin() || (isNotBanned() && resource.data.sellerId == request.auth.uid);
+            && request.resource.data.reservedFor == request.auth.uid)
+          || (resource.data.get('status', '') == 'reserved'
+            && resource.data.get('reservedFor', '') == request.auth.uid
+            && request.resource.data.status == 'available'
+            && request.resource.data.reservedFor == '')));
+      allow delete: if isAdmin() || (isNotBanned() && resource.data.get('sellerId', '') == request.auth.uid);
 
       match /comments/{commentId} {
         allow read: if true;
@@ -92,8 +110,8 @@ service cloud.firestore {
           && request.resource.data.text.size() <= 800;
         allow update: if false;
         allow delete: if isAdmin() || (isNotBanned() && (
-          resource.data.authorId == request.auth.uid
-          || get(/databases/$(database)/documents/listings/$(listingId)).data.sellerId == request.auth.uid
+          resource.data.get('authorId', '') == request.auth.uid
+          || get(/databases/$(database)/documents/listings/$(listingId)).data.get('sellerId', '') == request.auth.uid
         ));
       }
     }
@@ -101,8 +119,8 @@ service cloud.firestore {
     match /offers/{offerId} {
       allow read: if isAdmin() || (signedIn()
         && (resource == null
-          || resource.data.buyerId == request.auth.uid
-          || resource.data.sellerId == request.auth.uid));
+          || resource.data.get('buyerId', '') == request.auth.uid
+          || resource.data.get('sellerId', '') == request.auth.uid));
       allow create: if isNotBanned()
         && request.resource.data.buyerId == request.auth.uid
         && request.resource.data.sellerId != request.auth.uid
@@ -110,34 +128,41 @@ service cloud.firestore {
         && request.resource.data.amount > 0
         && request.resource.data.status in ['pending', 'countered'];
       allow update: if isAdmin() || (isNotBanned()
-        && (resource.data.buyerId == request.auth.uid
-          || resource.data.sellerId == request.auth.uid)
+        && (resource.data.get('buyerId', '') == request.auth.uid
+          || resource.data.get('sellerId', '') == request.auth.uid)
         && unchanged('buyerId')
         && unchanged('sellerId')
         && unchanged('listingId'));
       allow delete: if isAdmin();
 
       match /private/{docId} {
-        allow read: if signedIn()
-          && (isAdmin()
-            || get(/databases/$(database)/documents/offers/$(offerId)).data.buyerId == request.auth.uid);
+        allow read: if isAdmin() || (signedIn()
+          && exists(/databases/$(database)/documents/offers/$(offerId))
+          && get(/databases/$(database)/documents/offers/$(offerId)).data.get('buyerId', '') == request.auth.uid);
         allow write: if false;
       }
     }
 
     match /chats/{threadId} {
       allow create: if isNotBanned()
-        && request.auth.uid in request.resource.data.participants;
-      allow read, update: if isAdmin() || (isNotBanned()
-        && request.auth.uid in resource.data.participants);
+        && request.auth.uid in request.resource.data.get('participants', []);
+      allow read: if isAdmin() || (signedIn() && (
+        resource == null
+        || request.auth.uid in resource.data.get('participants', [])
+      ));
+      allow update: if isAdmin() || (isNotBanned()
+        && request.auth.uid in resource.data.get('participants', []));
       allow delete: if isAdmin();
 
       match /messages/{msgId} {
-        allow read: if isAdmin() || (signedIn()
-          && request.auth.uid in get(/databases/$(database)/documents/chats/$(threadId)).data.participants);
+        allow read: if isAdmin() || (signedIn() && (
+          !chatExists(threadId)
+          || request.auth.uid in get(/databases/$(database)/documents/chats/$(threadId)).data.get('participants', [])
+        ));
         allow create: if isNotBanned()
           && request.resource.data.senderId == request.auth.uid
-          && request.auth.uid in get(/databases/$(database)/documents/chats/$(threadId)).data.participants;
+          && chatExists(threadId)
+          && request.auth.uid in get(/databases/$(database)/documents/chats/$(threadId)).data.get('participants', []);
         allow update, delete: if false;
       }
     }
@@ -170,13 +195,16 @@ service cloud.firestore {
     }
 
     match /payments/{paymentId} {
-      allow read: if isAdmin() || (signedIn() && resource.data.userId == request.auth.uid);
+      allow read: if isAdmin() || (signedIn() && (
+        resource == null
+        || resource.data.get('userId', '') == request.auth.uid
+      ));
       allow create: if isNotBanned()
         && request.resource.data.userId == request.auth.uid
         && request.resource.data.amount is int
         && request.resource.data.amount >= 0;
       allow update: if isAdmin() || (isNotBanned()
-        && resource.data.status == 'completed'
+        && resource.data.get('status', '') == 'completed'
         && request.resource.data.status == 'refunded');
       allow delete: if false;
     }

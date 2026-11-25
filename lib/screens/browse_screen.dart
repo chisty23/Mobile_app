@@ -1717,6 +1717,33 @@ class _ListingCommentsSectionState extends State<_ListingCommentsSection> {
         StreamBuilder<List<ListingComment>>(
           stream: widget.listingProvider.commentsStream(widget.listing.id),
           builder: (context, snapshot) {
+            if (snapshot.hasError) {
+              return Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFD94B64).withValues(alpha: 0.1),
+                  borderRadius: BorderRadius.circular(14),
+                ),
+                child: Text(
+                  'Could not load comments right now: ${snapshot.error}',
+                  style: const TextStyle(fontSize: 12.5, color: Color(0xFFD94B64)),
+                ),
+              );
+            }
+            if (snapshot.connectionState == ConnectionState.waiting &&
+                !snapshot.hasData) {
+              return const Padding(
+                padding: EdgeInsets.symmetric(vertical: 12),
+                child: Center(
+                  child: SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+                ),
+              );
+            }
             final comments = snapshot.data ?? const [];
             if (comments.isEmpty) {
               return Container(

@@ -60,10 +60,10 @@ class _ListingChatScreenState extends State<ListingChatScreen> {
   Future<void> _send([String? overrideText]) async {
     final text = (overrideText ?? _msgController.text).trim();
     if (text.isEmpty) return;
-    if (overrideText == null) _msgController.clear();
 
     final chat = context.read<ChatProvider>();
-    await chat.sendMessage(
+    final messenger = ScaffoldMessenger.of(context);
+    final ok = await chat.sendMessage(
       threadId: widget.threadId,
       listingId: widget.listingId,
       listingTitle: widget.listingTitle,
@@ -74,11 +74,21 @@ class _ListingChatScreenState extends State<ListingChatScreen> {
       sellerName: widget.sellerName,
       text: text,
     );
-    if (_scrollController.hasClients) {
-      _scrollController.animateTo(
-        _scrollController.position.maxScrollExtent + 80,
-        duration: const Duration(milliseconds: 220),
-        curve: Curves.easeOut,
+    if (!mounted) return;
+    if (ok) {
+      if (overrideText == null) _msgController.clear();
+      if (_scrollController.hasClients) {
+        _scrollController.animateTo(
+          _scrollController.position.maxScrollExtent + 80,
+          duration: const Duration(milliseconds: 220),
+          curve: Curves.easeOut,
+        );
+      }
+    } else {
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text(chat.error ?? 'Could not send message. Please try again.'),
+        ),
       );
     }
   }
@@ -156,7 +166,20 @@ class _ListingChatScreenState extends State<ListingChatScreen> {
                 child: StreamBuilder<List<ChatMessage>>(
                   stream: chat.messagesStream(widget.threadId),
                   builder: (context, snapshot) {
-                    if (snapshot.connectionState == ConnectionState.waiting) {
+                    if (snapshot.hasError) {
+                      return Center(
+                        child: Padding(
+                          padding: const EdgeInsets.all(24),
+                          child: Text(
+                            'Could not load messages: ${snapshot.error}',
+                            textAlign: TextAlign.center,
+                            style: const TextStyle(color: Color(0xFFD94B64)),
+                          ),
+                        ),
+                      );
+                    }
+                    if (snapshot.connectionState == ConnectionState.waiting &&
+                        !snapshot.hasData) {
                       return const Center(child: CircularProgressIndicator());
                     }
                     final messages = snapshot.data ?? const [];

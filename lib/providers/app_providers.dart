@@ -104,9 +104,12 @@ class PasswordResetOutcome {
 }
 
 class ProfileDirectoryProvider extends ChangeNotifier {
-  final Map<String, PublicUserProfile> _profiles = {};
+  final Map<String, PublicUserProfile> _publicProfiles = {};
+  final Map<String, PublicUserProfile> _userFallbacks = {};
   final Set<String> _inFlight = {};
   StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _sub;
+  StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _usersSub;
+  StreamSubscription<User?>? _authSub;
 
   ProfileDirectoryProvider() {
     _initStream();
@@ -121,62 +124,118 @@ class ProfileDirectoryProvider extends ChangeNotifier {
           .snapshots()
           .listen((snap) {
         for (final doc in snap.docs) {
-          _profiles[doc.id] = PublicUserProfile.fromSnapshot(doc);
+          _publicProfiles[doc.id] = PublicUserProfile.fromSnapshot(doc);
         }
         notifyListeners();
       }, onError: (_) {});
+
+      _authSub = FirebaseAuth.instance.authStateChanges().listen((user) {
+        _usersSub?.cancel();
+        if (user == null) {
+          _userFallbacks.clear();
+          notifyListeners();
+          return;
+        }
+        _subscribeUsersFallback();
+      });
+      if (FirebaseAuth.instance.currentUser != null) {
+        _subscribeUsersFallback();
+      }
     } catch (_) {}
   }
 
-  PublicUserProfile? profileFor(String uid) => _profiles[uid];
+  void _subscribeUsersFallback() {
+    _usersSub?.cancel();
+    _usersSub = FirebaseFirestore.instance
+        .collection('users')
+        .limit(250)
+        .snapshots()
+        .listen((snap) {
+      for (final doc in snap.docs) {
+        _userFallbacks[doc.id] = PublicUserProfile.fromSnapshot(doc);
+      }
+      notifyListeners();
+    }, onError: (_) {});
+  }
+
+  PublicUserProfile? profileFor(String uid) {
+    final pub = _publicProfiles[uid];
+    final fb = _userFallbacks[uid];
+    if (pub == null) return fb;
+    if (fb == null) return pub;
+    if (pub.photoUrl.isEmpty && fb.photoUrl.isNotEmpty) {
+      return PublicUserProfile(
+        uid: uid,
+        name: pub.name.isNotEmpty ? pub.name : fb.name,
+        photoUrl: fb.photoUrl,
+        bio: pub.bio.isNotEmpty ? pub.bio : fb.bio,
+        department: pub.department.isNotEmpty ? pub.department : fb.department,
+        location: pub.location.isNotEmpty ? pub.location : fb.location,
+        batchYear: pub.batchYear.isNotEmpty ? pub.batchYear : fb.batchYear,
+        meetupSpot: pub.meetupSpot.isNotEmpty ? pub.meetupSpot : fb.meetupSpot,
+        verifiedStudent: pub.verifiedStudent || fb.verifiedStudent,
+        phoneVerified: pub.phoneVerified || fb.phoneVerified,
+        emailVerified: pub.emailVerified || fb.emailVerified,
+        soldCount: pub.soldCount > 0 ? pub.soldCount : fb.soldCount,
+        boughtCount: pub.boughtCount > 0 ? pub.boughtCount : fb.boughtCount,
+        ratingSum: pub.ratingSum > 0 ? pub.ratingSum : fb.ratingSum,
+        ratingCount: pub.ratingCount > 0 ? pub.ratingCount : fb.ratingCount,
+        isBanned: pub.isBanned || fb.isBanned,
+        updatedAt: pub.updatedAt ?? fb.updatedAt,
+      );
+    }
+    return pub;
+  }
 
   String photoFor(String uid, {String fallback = ''}) {
-    final p = _profiles[uid]?.photoUrl ?? '';
+    final p = profileFor(uid)?.photoUrl ?? '';
     return p.isNotEmpty ? p : fallback;
   }
 
   String nameFor(String uid, {String fallback = ''}) {
-    final n = _profiles[uid]?.name ?? '';
+    final n = profileFor(uid)?.name ?? '';
     return n.isNotEmpty ? n : fallback;
   }
 
   void upsertLocal(PublicUserProfile profile) {
-    _profiles[profile.uid] = profile;
+    _publicProfiles[profile.uid] = profile;
+    _userFallbacks[profile.uid] = profile;
     notifyListeners();
   }
 
   Future<PublicUserProfile?> ensureLoaded(String uid) async {
     if (uid.trim().isEmpty) return null;
-    if (_profiles.containsKey(uid)) return _profiles[uid];
-    if (_inFlight.contains(uid)) return null;
+    final existing = profileFor(uid);
+    if (existing != null && existing.photoUrl.isNotEmpty) return existing;
+    if (_inFlight.contains(uid)) return existing;
     try {
-      if (Firebase.apps.isEmpty) return null;
+      if (Firebase.apps.isEmpty) return existing;
       _inFlight.add(uid);
       final db = FirebaseFirestore.instance;
       final pub = await db.collection('public_profiles').doc(uid).get();
       if (pub.exists && pub.data() != null) {
-        final parsed = PublicUserProfile.fromSnapshot(pub);
-        _profiles[uid] = parsed;
-        notifyListeners();
-        return parsed;
+        _publicProfiles[uid] = PublicUserProfile.fromSnapshot(pub);
       }
-      final legacy = await db.collection('users').doc(uid).get();
-      if (legacy.exists && legacy.data() != null) {
-        final parsed = PublicUserProfile.fromMap(uid, legacy.data());
-        _profiles[uid] = parsed;
-        notifyListeners();
-        return parsed;
+      if ((_publicProfiles[uid]?.photoUrl ?? '').isEmpty) {
+        final legacy = await db.collection('users').doc(uid).get();
+        if (legacy.exists && legacy.data() != null) {
+          _userFallbacks[uid] = PublicUserProfile.fromMap(uid, legacy.data());
+        }
       }
+      notifyListeners();
+      return profileFor(uid);
     } catch (_) {
     } finally {
       _inFlight.remove(uid);
     }
-    return null;
+    return existing;
   }
 
   @override
   void dispose() {
     _sub?.cancel();
+    _usersSub?.cancel();
+    _authSub?.cancel();
     super.dispose();
   }
 }
@@ -190,6 +249,66 @@ class AuthProvider extends ChangeNotifier {
   bool guestMode = false;
   ConfirmationResult? _webConfirmation;
   String? _mobileVerificationId;
+  StreamSubscription<User?>? _syncSub;
+
+  AuthProvider() {
+    try {
+      if (Firebase.apps.isNotEmpty) {
+        _syncSub = _auth.authStateChanges().listen((user) {
+          if (user != null) {
+            unawaited(_backfillSignedInUser(user));
+          }
+        });
+        final cur = _auth.currentUser;
+        if (cur != null) {
+          unawaited(_backfillSignedInUser(cur));
+        }
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _backfillSignedInUser(User user) async {
+    try {
+      final doc = await _db.collection('users').doc(user.uid).get();
+      final data = doc.data();
+      if (data == null || data['isBanned'] == true) return;
+      await _syncPublicAndPhoneDirectory(uid: user.uid, userData: data);
+      await _syncSellerListingsMetadata(
+        uid: user.uid,
+        name: (data['name'] as String?) ?? user.displayName ?? 'PassItOn Member',
+        photoUrl: (data['photoUrl'] as String?) ?? '',
+      );
+    } catch (_) {}
+  }
+
+  Future<void> _syncSellerListingsMetadata({
+    required String uid,
+    required String name,
+    required String photoUrl,
+  }) async {
+    try {
+      final snap = await _db
+          .collection('listings')
+          .where('sellerId', isEqualTo: uid)
+          .limit(50)
+          .get();
+      if (snap.docs.isEmpty) return;
+      final batch = _db.batch();
+      var dirty = false;
+      for (final doc in snap.docs) {
+        final d = doc.data();
+        if ((d['sellerName'] ?? '') != name ||
+            (d['sellerPhotoUrl'] ?? '') != photoUrl) {
+          batch.update(doc.reference, {
+            'sellerName': name,
+            'sellerPhotoUrl': photoUrl,
+          });
+          dirty = true;
+        }
+      }
+      if (dirty) await batch.commit();
+    } catch (_) {}
+  }
 
   User? get user => _auth.currentUser;
 
@@ -827,6 +946,11 @@ class AuthProvider extends ChangeNotifier {
         uid: current.uid,
         userData: mergedData,
       );
+      await _syncSellerListingsMetadata(
+        uid: current.uid,
+        name: name.trim(),
+        photoUrl: nextPhoto,
+      );
 
       directory?.upsertLocal(
         PublicUserProfile.fromMap(current.uid, mergedData),
@@ -987,6 +1111,12 @@ class AuthProvider extends ChangeNotifier {
   Future<void> logout() async {
     guestMode = false;
     await _auth.signOut();
+  }
+
+  @override
+  void dispose() {
+    _syncSub?.cancel();
+    super.dispose();
   }
 }
 
@@ -2414,6 +2544,7 @@ class ChatProvider extends ChangeNotifier {
   StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _threadSub;
   List<ChatThread> threads = [];
   bool sending = false;
+  String? error;
 
   ChatProvider() {
     _authSub = FirebaseAuth.instance.authStateChanges().listen((_) {
@@ -2469,6 +2600,7 @@ class ChatProvider extends ChangeNotifier {
     final clean = text.trim();
     if (user == null || clean.isEmpty) return false;
     sending = true;
+    error = null;
     notifyListeners();
     try {
       final buyerMeta = await _fetchMemberSnapshot(_db, buyerId, buyerName);
@@ -2499,7 +2631,11 @@ class ChatProvider extends ChangeNotifier {
         'createdAt': FieldValue.serverTimestamp(),
       });
       return true;
-    } catch (_) {
+    } on FirebaseException catch (e) {
+      error = e.message ?? 'Could not send message (${e.code})';
+      return false;
+    } catch (e) {
+      error = e.toString();
       return false;
     } finally {
       sending = false;
@@ -2598,15 +2734,20 @@ class AdminProvider extends ChangeNotifier {
       if (isCurrentUserAdmin) {
         _startAdminStreams();
       } else {
+        _paySub?.cancel();
         _metricsSub?.cancel();
         _reportsSub?.cancel();
         _listingsSub?.cancel();
         _offersSub?.cancel();
         _usersSub?.cancel();
+        loading = false;
       }
       notifyListeners();
     }, onError: (_) {});
+  }
 
+  void _startAdminStreams() {
+    _paySub?.cancel();
     _paySub = _db
         .collection('payments')
         .orderBy('createdAt', descending: true)
@@ -2620,9 +2761,7 @@ class AdminProvider extends ChangeNotifier {
       loading = false;
       notifyListeners();
     });
-  }
 
-  void _startAdminStreams() {
     _metricsSub?.cancel();
     _metricsSub = _db
         .collection('platform_metrics')
