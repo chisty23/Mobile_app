@@ -44,9 +44,21 @@ jobs:
       - name: Build production web bundle
         run: flutter build web --release
 
+      - name: Check Firebase deploy secret
+        id: check_secret
+        env:
+          SA_JSON: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_PASS_IT_ON_2F422 }}
+        run: |
+          if [ -n "$SA_JSON" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "FIREBASE_SERVICE_ACCOUNT_PASS_IT_ON_2F422 secret is not set; skipping automatic Firebase deploy."
+          fi
+
       - name: Deploy Hosting to Firebase
         uses: FirebaseExtended/action-hosting-deploy@v0
-        if: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_PASS_IT_ON_2F422 != '' }}
+        if: steps.check_secret.outputs.enabled == 'true'
         with:
           repoToken: ${{ secrets.GITHUB_TOKEN }}
           firebaseServiceAccount: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_PASS_IT_ON_2F422 }}
@@ -54,11 +66,11 @@ jobs:
           channelId: live
 
       - name: Deploy Firestore Rules & Indexes
-        if: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_PASS_IT_ON_2F422 != '' }}
+        if: steps.check_secret.outputs.enabled == 'true'
         env:
           SA_JSON: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_PASS_IT_ON_2F422 }}
         run: |
-          echo "$SA_JSON" > /tmp/sa.json
+          trap 'rm -f /tmp/sa.json' EXIT
+          printf '%s' "$SA_JSON" > /tmp/sa.json
           export GOOGLE_APPLICATION_CREDENTIALS=/tmp/sa.json
           npx --yes firebase-tools@latest deploy --only firestore --project pass-it-on-2f422 --non-interactive
-          rm -f /tmp/sa.json
