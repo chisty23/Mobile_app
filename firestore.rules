@@ -38,25 +38,127 @@ service cloud.firestore {
         || ((field in resource.data) && request.resource.data[field] == resource.data[field]);
     }
 
+    function listingPath(listingId) {
+      return /databases/$(database)/documents/listings/$(listingId);
+    }
+
+    function offerPath(offerId) {
+      return /databases/$(database)/documents/offers/$(offerId);
+    }
+
+    function ratingPath(listingId) {
+      return /databases/$(database)/documents/ratings/$(listingId);
+    }
+
+    function userPath(uid) {
+      return /databases/$(database)/documents/users/$(uid);
+    }
+
     function chatExists(threadId) {
       return exists(/databases/$(database)/documents/chats/$(threadId));
     }
 
-    // Active Rules (Spark + Blaze Compatible).
-    // Once upgraded to Blaze and `functions/` deployed, update with strict Blaze rules.
+    function offerNotExpired(offerData) {
+      return offerData.createdAt is timestamp
+        && offerData.createdAt + duration.value(48, 'h') > request.time;
+    }
+
+    function offerIsExpired(offerData) {
+      return offerData.createdAt is timestamp
+        && request.time >= offerData.createdAt + duration.value(48, 'h');
+    }
+
+    function isValidRatingUserStatsWithId(userId, ratingId) {
+      return ratingId is string
+        && ratingId.size() > 0
+        && request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(['ratingSum', 'ratingCount', 'lastRatingId'])
+        && !exists(ratingPath(ratingId))
+        && existsAfter(ratingPath(ratingId))
+        && getAfter(ratingPath(ratingId)).data.sellerId == userId
+        && getAfter(ratingPath(ratingId)).data.buyerId == request.auth.uid
+        && request.resource.data.get('ratingCount', 0) == resource.data.get('ratingCount', 0) + 1
+        && request.resource.data.get('ratingSum', 0)
+          == resource.data.get('ratingSum', 0) + getAfter(ratingPath(ratingId)).data.stars;
+    }
+
+    function isValidRatingUserStatsUpdate(userId) {
+      return isValidRatingUserStatsWithId(
+        userId,
+        request.resource.data.get('lastRatingId', '')
+      );
+    }
+
+    function isValidCompletionUserStatsWithOffer(userId, completedOfferId) {
+      return completedOfferId is string
+        && completedOfferId.size() > 0
+        && request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(['soldCount', 'boughtCount', 'lastCompletedOfferId'])
+        && exists(offerPath(completedOfferId))
+        && get(offerPath(completedOfferId)).data.sellerId == request.auth.uid
+        && get(offerPath(completedOfferId)).data.status == 'accepted'
+        && getAfter(offerPath(completedOfferId)).data.status == 'completed'
+        && get(listingPath(get(offerPath(completedOfferId)).data.listingId)).data.get('statsCounted', false) == false
+        && (userId == get(offerPath(completedOfferId)).data.sellerId
+          || userId == get(offerPath(completedOfferId)).data.buyerId)
+        && request.resource.data.get('soldCount', 0)
+          == resource.data.get('soldCount', 0)
+            + (userId == get(offerPath(completedOfferId)).data.sellerId ? 1 : 0)
+        && request.resource.data.get('boughtCount', 0)
+          == resource.data.get('boughtCount', 0)
+            + (userId == get(offerPath(completedOfferId)).data.buyerId ? 1 : 0);
+    }
+
+    function isValidCompletionUserStatsUpdate(userId) {
+      return isValidCompletionUserStatsWithOffer(
+        userId,
+        request.resource.data.get('lastCompletedOfferId', '')
+      );
+    }
+
+    function statsMatchUserDoc(userId) {
+      return userExists(userId)
+        && request.resource.data.get('soldCount', 0) == userDoc(userId).get('soldCount', 0)
+        && request.resource.data.get('boughtCount', 0) == userDoc(userId).get('boughtCount', 0)
+        && request.resource.data.get('ratingSum', 0) == userDoc(userId).get('ratingSum', 0)
+        && request.resource.data.get('ratingCount', 0) == userDoc(userId).get('ratingCount', 0);
+    }
+
+    function statsMatchAfterUserDoc(userId) {
+      return request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(['soldCount', 'boughtCount', 'ratingSum', 'ratingCount'])
+        && request.resource.data.get('soldCount', 0) == getAfter(userPath(userId)).data.get('soldCount', 0)
+        && request.resource.data.get('boughtCount', 0) == getAfter(userPath(userId)).data.get('boughtCount', 0)
+        && request.resource.data.get('ratingSum', 0) == getAfter(userPath(userId)).data.get('ratingSum', 0)
+        && request.resource.data.get('ratingCount', 0) == getAfter(userPath(userId)).data.get('ratingCount', 0);
+    }
+
+    // Hardened Spark-plan Production Rules
     match /users/{userId} {
-      allow read: if signedIn();
+      allow read: if isOwner(userId) || isAdmin();
       allow create: if isOwner(userId)
         && request.resource.data.get('role', 'customer') == 'customer'
         && request.resource.data.get('isAdmin', false) == false
-        && request.resource.data.get('isBanned', false) != true;
-      allow update: if isAdmin() || (isOwner(userId)
-        && unchanged('role')
-        && unchanged('isAdmin')
-        && unchanged('isBanned')
-        && unchanged('verifiedStudent')) || (isNotBanned()
-        && request.resource.data.diff(resource.data).affectedKeys()
-          .hasOnly(['soldCount', 'boughtCount', 'ratingSum', 'ratingCount']));
+        && request.resource.data.get('isBanned', false) != true
+        && request.resource.data.get('soldCount', 0) == 0
+        && request.resource.data.get('boughtCount', 0) == 0
+        && request.resource.data.get('ratingSum', 0) == 0
+        && request.resource.data.get('ratingCount', 0) == 0;
+      allow update: if isAdmin()
+        || (isOwner(userId)
+          && isNotBanned()
+          && unchanged('role')
+          && unchanged('isAdmin')
+          && unchanged('isBanned')
+          && unchanged('verifiedStudent')
+          && unchanged('soldCount')
+          && unchanged('boughtCount')
+          && unchanged('ratingSum')
+          && unchanged('ratingCount')
+          && unchanged('lastCompletedOfferId')
+          && unchanged('lastRatingId'))
+        || (isNotBanned() && isValidRatingUserStatsUpdate(userId))
+        || (isNotBanned() && isValidCompletionUserStatsUpdate(userId));
       allow delete: if isOwner(userId) || isAdmin();
 
       match /favorites/{listingId} {
@@ -67,9 +169,33 @@ service cloud.firestore {
 
     match /public_profiles/{userId} {
       allow read: if true;
-      allow create, update: if isOwner(userId)
+      allow create: if isAdmin() || (
+        isOwner(userId)
         && isNotBanned()
-        && request.resource.data.get('isBanned', false) != true;
+        && request.resource.data.get('isBanned', false) != true
+        && statsMatchUserDoc(userId)
+      );
+      allow update: if isAdmin()
+        || (isOwner(userId)
+          && isNotBanned()
+          && request.resource.data.get('isBanned', false) != true
+          && unchanged('soldCount')
+          && unchanged('boughtCount')
+          && unchanged('ratingSum')
+          && unchanged('ratingCount'))
+        || (isNotBanned()
+          && existsAfter(userPath(userId))
+          && statsMatchAfterUserDoc(userId)
+          && (
+            (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['ratingSum', 'ratingCount'])
+              && getAfter(userPath(userId)).data.get('lastRatingId', '') is string
+              && existsAfter(ratingPath(getAfter(userPath(userId)).data.get('lastRatingId', '')))
+              && getAfter(ratingPath(getAfter(userPath(userId)).data.get('lastRatingId', ''))).data.buyerId == request.auth.uid)
+            || (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['soldCount', 'boughtCount'])
+              && getAfter(userPath(userId)).data.get('lastCompletedOfferId', '') is string
+              && get(offerPath(getAfter(userPath(userId)).data.get('lastCompletedOfferId', ''))).data.sellerId == request.auth.uid
+              && getAfter(offerPath(getAfter(userPath(userId)).data.get('lastCompletedOfferId', ''))).data.status == 'completed')
+          ));
       allow delete: if isOwner(userId) || isAdmin();
     }
 
@@ -87,6 +213,10 @@ service cloud.firestore {
       allow create: if isNotBanned()
         && request.resource.data.sellerId == request.auth.uid
         && request.resource.data.status == 'available'
+        && request.resource.data.get('reservedFor', '') == ''
+        && request.resource.data.get('statsCounted', false) == false
+        && request.resource.data.title is string
+        && request.resource.data.title.size() >= 3
         && request.resource.data.price is int
         && request.resource.data.price > 0;
       allow update: if isAdmin() || (isNotBanned()
@@ -94,11 +224,19 @@ service cloud.firestore {
         && (resource.data.get('sellerId', '') == request.auth.uid
           || (resource.data.get('status', '') == 'available'
             && request.resource.data.status == 'reserved'
-            && request.resource.data.reservedFor == request.auth.uid)
+            && request.resource.data.reservedFor == request.auth.uid
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'reservedFor', 'updatedAt'])
+            && exists(offerPath(listingId + '_' + request.auth.uid))
+            && get(offerPath(listingId + '_' + request.auth.uid)).data.status == 'countered'
+            && getAfter(offerPath(listingId + '_' + request.auth.uid)).data.status == 'accepted')
           || (resource.data.get('status', '') == 'reserved'
             && resource.data.get('reservedFor', '') == request.auth.uid
             && request.resource.data.status == 'available'
-            && request.resource.data.reservedFor == '')));
+            && request.resource.data.reservedFor == ''
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'reservedFor', 'updatedAt'])
+            && exists(offerPath(listingId + '_' + request.auth.uid))
+            && get(offerPath(listingId + '_' + request.auth.uid)).data.status == 'accepted'
+            && getAfter(offerPath(listingId + '_' + request.auth.uid)).data.status == 'withdrawn')));
       allow delete: if isAdmin() || (isNotBanned() && resource.data.get('sellerId', '') == request.auth.uid);
 
       match /comments/{commentId} {
@@ -111,7 +249,7 @@ service cloud.firestore {
         allow update: if false;
         allow delete: if isAdmin() || (isNotBanned() && (
           resource.data.get('authorId', '') == request.auth.uid
-          || get(/databases/$(database)/documents/listings/$(listingId)).data.get('sellerId', '') == request.auth.uid
+          || get(listingPath(listingId)).data.get('sellerId', '') == request.auth.uid
         ));
       }
     }
@@ -121,37 +259,140 @@ service cloud.firestore {
         && (resource == null
           || resource.data.get('buyerId', '') == request.auth.uid
           || resource.data.get('sellerId', '') == request.auth.uid));
+
       allow create: if isNotBanned()
+        && offerId == request.resource.data.listingId + '_' + request.auth.uid
         && request.resource.data.buyerId == request.auth.uid
         && request.resource.data.sellerId != request.auth.uid
+        && request.resource.data.lastUpdatedBy == request.auth.uid
+        && request.resource.data.status == 'pending'
+        && request.resource.data.get('isRated', false) == false
         && request.resource.data.amount is int
         && request.resource.data.amount > 0
-        && request.resource.data.status in ['pending', 'countered'];
+        && exists(listingPath(request.resource.data.listingId))
+        && get(listingPath(request.resource.data.listingId)).data.status == 'available'
+        && get(listingPath(request.resource.data.listingId)).data.sellerId == request.resource.data.sellerId;
+
       allow update: if isAdmin() || (isNotBanned()
-        && (resource.data.get('buyerId', '') == request.auth.uid
-          || resource.data.get('sellerId', '') == request.auth.uid)
         && unchanged('buyerId')
         && unchanged('sellerId')
-        && unchanged('listingId'));
+        && unchanged('listingId')
+        && (
+          // 1. Buyer re-submits or updates non-expired/reopened offer (never expired/accepted/completed)
+          (resource.data.buyerId == request.auth.uid
+            && resource.data.status in ['declined', 'withdrawn', 'pending', 'countered']
+            && request.resource.data.status == 'pending'
+            && request.resource.data.lastUpdatedBy == request.auth.uid
+            && request.resource.data.amount is int
+            && request.resource.data.amount > 0
+            && request.resource.data.get('isRated', false) == false
+            && get(listingPath(resource.data.listingId)).data.status == 'available')
+
+          // 2. Seller sends counter-offer
+          || (resource.data.sellerId == request.auth.uid
+            && resource.data.status in ['pending', 'countered']
+            && offerNotExpired(resource.data)
+            && request.resource.data.status == 'countered'
+            && request.resource.data.lastUpdatedBy == request.auth.uid
+            && request.resource.data.amount is int
+            && request.resource.data.amount > 0
+            && unchanged('isRated')
+            && get(listingPath(resource.data.listingId)).data.status == 'available')
+
+          // 3. Seller accepts buyer's pending offer (atomically reserves listing)
+          || (resource.data.sellerId == request.auth.uid
+            && resource.data.status == 'pending'
+            && offerNotExpired(resource.data)
+            && request.resource.data.status == 'accepted'
+            && unchanged('amount')
+            && request.resource.data.get('handoverCode', '') is string
+            && request.resource.data.get('handoverCode', '').size() >= 4
+            && get(listingPath(resource.data.listingId)).data.status == 'available'
+            && getAfter(listingPath(resource.data.listingId)).data.status == 'reserved'
+            && getAfter(listingPath(resource.data.listingId)).data.reservedFor == resource.data.buyerId)
+
+          // 4. Buyer accepts seller's counter-offer (atomically reserves listing)
+          || (resource.data.buyerId == request.auth.uid
+            && resource.data.status == 'countered'
+            && resource.data.get('lastUpdatedBy', '') != request.auth.uid
+            && offerNotExpired(resource.data)
+            && request.resource.data.status == 'accepted'
+            && unchanged('amount')
+            && request.resource.data.get('handoverCode', '') is string
+            && request.resource.data.get('handoverCode', '').size() >= 4
+            && get(listingPath(resource.data.listingId)).data.status == 'available'
+            && getAfter(listingPath(resource.data.listingId)).data.status == 'reserved'
+            && getAfter(listingPath(resource.data.listingId)).data.reservedFor == request.auth.uid)
+
+          // 5. Seller declines active offer or competing offer cleanup
+          || (resource.data.sellerId == request.auth.uid
+            && resource.data.status in ['pending', 'countered', 'accepted']
+            && request.resource.data.status == 'declined'
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'updatedAt']))
+
+          // 6. Winning buyer's acceptCounter atomically declines competing offers on same listing
+          || (resource.data.status in ['pending', 'countered']
+            && request.resource.data.status == 'declined'
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'updatedAt'])
+            && get(listingPath(resource.data.listingId)).data.status == 'available'
+            && getAfter(listingPath(resource.data.listingId)).data.status == 'reserved'
+            && getAfter(listingPath(resource.data.listingId)).data.reservedFor == request.auth.uid)
+
+          // 7. Buyer declines counter or withdraws active/accepted offer
+          || (resource.data.buyerId == request.auth.uid
+            && resource.data.status in ['pending', 'countered', 'accepted']
+            && ((request.resource.data.status == 'declined' && resource.data.status == 'countered')
+              || request.resource.data.status == 'withdrawn')
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'updatedAt']))
+
+          // 8. Seller marks accepted offer completed (atomically marks listing sold)
+          || (resource.data.sellerId == request.auth.uid
+            && resource.data.status == 'accepted'
+            && request.resource.data.status == 'completed'
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'updatedAt'])
+            && getAfter(listingPath(resource.data.listingId)).data.status == 'sold')
+
+          // 9. Expire pending/countered offers strictly after 48h server time
+          || ((resource.data.buyerId == request.auth.uid || resource.data.sellerId == request.auth.uid)
+            && resource.data.status in ['pending', 'countered']
+            && offerIsExpired(resource.data)
+            && request.resource.data.status == 'expired'
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'updatedAt']))
+
+          // 10. Mark completed offer as rated only when rating document is created in same tx
+          || (resource.data.buyerId == request.auth.uid
+            && resource.data.status == 'completed'
+            && resource.data.get('isRated', false) == false
+            && request.resource.data.isRated == true
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['isRated'])
+            && existsAfter(ratingPath(resource.data.listingId)))
+        ));
+
       allow delete: if isAdmin();
 
       match /private/{docId} {
         allow read: if isAdmin() || (signedIn()
-          && exists(/databases/$(database)/documents/offers/$(offerId))
-          && get(/databases/$(database)/documents/offers/$(offerId)).data.get('buyerId', '') == request.auth.uid);
+          && exists(offerPath(offerId))
+          && get(offerPath(offerId)).data.get('buyerId', '') == request.auth.uid);
         allow write: if false;
       }
     }
 
     match /chats/{threadId} {
       allow create: if isNotBanned()
-        && request.auth.uid in request.resource.data.get('participants', []);
+        && request.auth.uid in request.resource.data.get('participants', [])
+        && request.resource.data.participants is list
+        && request.resource.data.participants.size() == 2;
       allow read: if isAdmin() || (signedIn() && (
         resource == null
         || request.auth.uid in resource.data.get('participants', [])
       ));
       allow update: if isAdmin() || (isNotBanned()
-        && request.auth.uid in resource.data.get('participants', []));
+        && request.auth.uid in resource.data.get('participants', [])
+        && unchanged('participants')
+        && unchanged('buyerId')
+        && unchanged('sellerId')
+        && unchanged('listingId'));
       allow delete: if isAdmin();
 
       match /messages/{msgId} {
@@ -161,6 +402,8 @@ service cloud.firestore {
         ));
         allow create: if isNotBanned()
           && request.resource.data.senderId == request.auth.uid
+          && request.resource.data.text is string
+          && request.resource.data.text.size() > 0
           && chatExists(threadId)
           && request.auth.uid in get(/databases/$(database)/documents/chats/$(threadId)).data.get('participants', []);
         allow update, delete: if false;
@@ -170,10 +413,18 @@ service cloud.firestore {
     match /ratings/{listingId} {
       allow read: if true;
       allow create: if isNotBanned()
+        && request.resource.data.listingId == listingId
         && request.resource.data.buyerId == request.auth.uid
         && request.resource.data.stars is int
         && request.resource.data.stars >= 1
-        && request.resource.data.stars <= 5;
+        && request.resource.data.stars <= 5
+        && exists(listingPath(listingId))
+        && get(listingPath(listingId)).data.status == 'sold'
+        && get(listingPath(listingId)).data.sellerId == request.resource.data.sellerId
+        && exists(offerPath(listingId + '_' + request.auth.uid))
+        && get(offerPath(listingId + '_' + request.auth.uid)).data.buyerId == request.auth.uid
+        && get(offerPath(listingId + '_' + request.auth.uid)).data.sellerId == request.resource.data.sellerId
+        && get(offerPath(listingId + '_' + request.auth.uid)).data.status == 'completed';
       allow update, delete: if false;
     }
 
@@ -202,10 +453,17 @@ service cloud.firestore {
       allow create: if isNotBanned()
         && request.resource.data.userId == request.auth.uid
         && request.resource.data.amount is int
-        && request.resource.data.amount >= 0;
+        && request.resource.data.amount >= 0
+        && request.resource.data.status == 'completed'
+        && request.resource.data.get('gatewayMode', '') == 'spark_sandbox';
       allow update: if isAdmin() || (isNotBanned()
         && resource.data.get('status', '') == 'completed'
-        && request.resource.data.status == 'refunded');
+        && request.resource.data.status == 'refunded'
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status'])
+        && (resource.data.get('userId', '') == request.auth.uid
+          || (resource.data.get('type', '') == 'buyer_order_fee'
+            && exists(listingPath(resource.data.get('referenceId', '')))
+            && get(listingPath(resource.data.get('referenceId', ''))).data.get('sellerId', '') == request.auth.uid)));
       allow delete: if false;
     }
   }

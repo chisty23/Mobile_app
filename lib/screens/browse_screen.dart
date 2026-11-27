@@ -1,4 +1,3 @@
-import 'package:firebase_auth/firebase_auth.dart' hide AuthProvider;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
@@ -15,20 +14,40 @@ import '../widgets/seller_profile_sheet.dart';
 import '../widgets/smart_image.dart';
 import '../widgets/user_avatar.dart';
 import 'chat_screen.dart';
-import 'notifications_sheet.dart';
+import 'sell_screen.dart';
 
-class BrowseScreen extends StatelessWidget {
+class BrowseScreen extends StatefulWidget {
   const BrowseScreen({super.key});
+
+  @override
+  State<BrowseScreen> createState() => _BrowseScreenState();
+}
+
+class _BrowseScreenState extends State<BrowseScreen> {
+  late final TextEditingController _searchCtrl;
+
+  @override
+  void initState() {
+    super.initState();
+    _searchCtrl = TextEditingController(
+      text: context.read<ListingProvider>().query,
+    );
+  }
+
+  @override
+  void dispose() {
+    _searchCtrl.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
     final listing = context.watch<ListingProvider>();
-    final offers = context.watch<OfferProvider>();
-    final chat = context.watch<ChatProvider>();
-    final unreadNotifications = offers.unreadNotificationCount;
+    final auth = context.watch<AuthProvider>();
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    final currentUser = FirebaseAuth.instance.currentUser;
-    final isDesktop = MediaQuery.sizeOf(context).width >= 840;
+    if (_searchCtrl.text != listing.query && listing.query.isEmpty) {
+      _searchCtrl.clear();
+    }
 
     return SafeArea(
       bottom: false,
@@ -109,62 +128,17 @@ class BrowseScreen extends StatelessWidget {
                             ],
                           ),
                         ),
-                        if (!isDesktop) ...[
-                          if (currentUser == null)
-                            FilledButton(
-                              onPressed: () => context.read<AuthProvider>().exitGuestMode(),
-                              style: FilledButton.styleFrom(
-                                backgroundColor: const Color(0xFF252832),
-                                foregroundColor: Colors.white,
-                                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-                              ),
-                              child: const Text('Sign in', style: TextStyle(fontWeight: FontWeight.w700)),
-                            )
-                          else ...[
-                            _headerActionButton(
-                              context: context,
-                              isDark: isDark,
-                              badgeCount: chat.threads.length,
-                              badgeColor: const Color(0xFF667B72),
-                              onTap: () => showModalBottomSheet(
-                                context: context,
-                                isScrollControlled: true,
-                                backgroundColor: Colors.transparent,
-                                builder: (_) => const ChatsDrawerSheet(),
-                              ),
-                              child: Icon(
-                                Icons.chat_bubble_outline_rounded,
-                                size: 21,
-                                color: isDark ? Colors.white70 : const Color(0xFF252832),
-                              ),
+                        if (!auth.isSignedIn)
+                          FilledButton(
+                            onPressed: () => context.read<AuthProvider>().exitGuestMode(),
+                            style: FilledButton.styleFrom(
+                              backgroundColor: const Color(0xFF252832),
+                              foregroundColor: Colors.white,
+                              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
                             ),
-                            const SizedBox(width: 10),
-                            _headerActionButton(
-                              context: context,
-                              isDark: isDark,
-                              badgeCount: unreadNotifications,
-                              badgeColor: const Color(0xFFD94B64),
-                              onTap: () => showModalBottomSheet(
-                                context: context,
-                                isScrollControlled: true,
-                                backgroundColor: Colors.transparent,
-                                builder: (_) => const NotificationsSheet(),
-                              ),
-                              child: unreadNotifications > 0
-                                  ? const RingingBellIcon(
-                                      isRinging: true,
-                                      color: Color(0xFFC69C55),
-                                      size: 22,
-                                    )
-                                  : Icon(
-                                      Icons.notifications_none_rounded,
-                                      size: 23,
-                                      color: isDark ? Colors.white70 : const Color(0xFF252832),
-                                    ),
-                            ),
-                          ],
-                        ],
+                            child: const Text('Sign in', style: TextStyle(fontWeight: FontWeight.w700)),
+                          ),
                       ],
                     ),
                   ),
@@ -172,37 +146,79 @@ class BrowseScreen extends StatelessWidget {
                 SliverPadding(
                   padding: const EdgeInsets.fromLTRB(20, 10, 20, 10),
                   sliver: SliverToBoxAdapter(
-                    child: TextField(
-                      onChanged: listing.setQuery,
-                      decoration: InputDecoration(
-                        hintText: 'Search books, electronics, bikes, campus zone...',
-                        prefixIcon: const Icon(Icons.search_rounded),
-                        suffixIcon: IconButton(
-                          tooltip: 'Filter results',
-                          onPressed: () => BrowseFilterSheet.show(context),
-                          icon: Badge(
-                            isLabelVisible: listing.activeFilterCount > 0,
-                            label: Text('${listing.activeFilterCount}'),
-                            child: const Icon(Icons.tune_rounded),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        TextField(
+                          controller: _searchCtrl,
+                          onChanged: listing.setQuery,
+                          decoration: InputDecoration(
+                            hintText: 'Search books, electronics, bikes, campus zone...',
+                            prefixIcon: const Icon(Icons.search_rounded),
+                            suffixIcon: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                if (listing.query.isNotEmpty)
+                                  IconButton(
+                                    tooltip: 'Clear search',
+                                    onPressed: () {
+                                      _searchCtrl.clear();
+                                      listing.setQuery('');
+                                    },
+                                    icon: const Icon(Icons.close_rounded, size: 19),
+                                  ),
+                                IconButton(
+                                  tooltip: 'Filter results',
+                                  onPressed: () => BrowseFilterSheet.show(context),
+                                  icon: Badge(
+                                    isLabelVisible: listing.activeFilterCount > 0,
+                                    label: Text('${listing.activeFilterCount}'),
+                                    child: const Icon(Icons.tune_rounded),
+                                  ),
+                                ),
+                              ],
+                            ),
+                            filled: true,
+                            fillColor: isDark
+                                ? const Color(0xFF1E222B)
+                                : Colors.white,
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(18),
+                              borderSide: BorderSide(
+                                color: isDark ? const Color(0xFF2E3442) : const Color(0xFFE6E4DC),
+                              ),
+                            ),
+                            enabledBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(18),
+                              borderSide: BorderSide(
+                                color: isDark ? const Color(0xFF2E3442) : const Color(0xFFE6E4DC),
+                              ),
+                            ),
                           ),
                         ),
-                        filled: true,
-                        fillColor: isDark
-                            ? const Color(0xFF1E222B)
-                            : Colors.white,
-                        border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(18),
-                          borderSide: BorderSide(
-                            color: isDark ? const Color(0xFF2E3442) : const Color(0xFFE6E4DC),
+                        if (listing.searchError != null) ...[
+                          const SizedBox(height: 6),
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFFF2A14A).withValues(alpha: 0.14),
+                              borderRadius: BorderRadius.circular(10),
+                            ),
+                            child: Row(
+                              children: [
+                                const Icon(Icons.info_outline_rounded, size: 15, color: Color(0xFFF2A14A)),
+                                const SizedBox(width: 6),
+                                Expanded(
+                                  child: Text(
+                                    '${listing.searchError} Showing loaded results.',
+                                    style: const TextStyle(fontSize: 11.5, color: Color(0xFFB57221)),
+                                  ),
+                                ),
+                              ],
+                            ),
                           ),
-                        ),
-                        enabledBorder: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(18),
-                          borderSide: BorderSide(
-                            color: isDark ? const Color(0xFF2E3442) : const Color(0xFFE6E4DC),
-                          ),
-                        ),
-                      ),
+                        ],
+                      ],
                     ),
                   ),
                 ),
@@ -495,73 +511,9 @@ class BrowseScreen extends StatelessWidget {
     );
   }
 
-  Widget _headerActionButton({
-    required BuildContext context,
-    required bool isDark,
-    required int badgeCount,
-    required Color badgeColor,
-    required VoidCallback onTap,
-    required Widget child,
-  }) {
-    return BouncyTap(
-      onTap: onTap,
-      child: Stack(
-        clipBehavior: Clip.none,
-        children: [
-          Container(
-            width: 44,
-            height: 44,
-            decoration: BoxDecoration(
-              color: isDark ? const Color(0xFF1E222B) : Colors.white,
-              borderRadius: BorderRadius.circular(14),
-              border: Border.all(
-                color: isDark ? const Color(0xFF2E3442) : const Color(0xFFE6E4DC),
-              ),
-            ),
-            child: Center(child: child),
-          ),
-          if (badgeCount > 0)
-            Positioned(
-              top: -4,
-              right: -4,
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                decoration: BoxDecoration(
-                  color: badgeColor,
-                  borderRadius: BorderRadius.circular(99),
-                ),
-                child: Text(
-                  '$badgeCount',
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 10,
-                    fontWeight: FontWeight.w900,
-                  ),
-                ),
-              ),
-            ),
-        ],
-      ),
-    );
-  }
-
   IconData _categoryChipIcon(String category) {
-    switch (category) {
-      case 'All':
-        return Icons.grid_view_rounded;
-      case 'Books':
-        return Icons.menu_book_rounded;
-      case 'Electronics':
-        return Icons.devices_other_rounded;
-      case 'Fashion':
-        return Icons.checkroom_rounded;
-      case 'Sports':
-        return Icons.sports_basketball_rounded;
-      case 'Furniture':
-        return Icons.chair_rounded;
-      default:
-        return Icons.category_rounded;
-    }
+    if (category == 'All') return Icons.grid_view_rounded;
+    return ListingCategoryArtwork.iconData(category);
   }
 
   Widget _emptyState(
@@ -666,7 +618,7 @@ class _ListingCardState extends State<_ListingCard> {
                     Container(
                       margin: const EdgeInsets.all(6),
                       decoration: BoxDecoration(
-                        gradient: _categoryGradient(listing.category),
+                        gradient: ListingCategoryArtwork.gradient(listing.category),
                         borderRadius: BorderRadius.circular(13),
                       ),
                       child: ClipRRect(
@@ -674,7 +626,7 @@ class _ListingCardState extends State<_ListingCard> {
                         child: SmartListingImage(
                           imageUrl: listing.imageUrl,
                           fit: BoxFit.cover,
-                          fallback: _categoryIcon(listing.category),
+                          fallback: ListingCategoryArtwork.fallback(listing.category),
                         ),
                       ),
                     ),
@@ -699,13 +651,21 @@ class _ListingCardState extends State<_ListingCard> {
                             onTap: () async {
                               final ok = await provider.toggleFavorite(listing);
                               if (!ok && context.mounted) {
+                                final isSignedIn = context.read<AuthProvider>().isSignedIn;
                                 ScaffoldMessenger.of(context).showSnackBar(
                                   SnackBar(
-                                    content: const Text('Sign in to save favourite items'),
-                                    action: SnackBarAction(
-                                      label: 'Sign in',
-                                      onPressed: () => context.read<AuthProvider>().exitGuestMode(),
+                                    content: Text(
+                                      isSignedIn
+                                          ? (provider.error ?? 'Could not update saved item')
+                                          : 'Sign in to save favourite items',
                                     ),
+                                    action: isSignedIn
+                                        ? null
+                                        : SnackBarAction(
+                                            label: 'Sign in',
+                                            onPressed: () =>
+                                                context.read<AuthProvider>().exitGuestMode(),
+                                          ),
                                   ),
                                 );
                               }
@@ -784,7 +744,7 @@ class _ListingCardState extends State<_ListingCard> {
                         fontSize: 14,
                       ),
                     ),
-                    const SizedBox(height: 4),
+                    const SizedBox(height: 3),
                     Row(
                       children: [
                         Container(
@@ -809,7 +769,35 @@ class _ListingCardState extends State<_ListingCard> {
                             ],
                           ),
                         ),
-                        const SizedBox(width: 6),
+                        const SizedBox(width: 4),
+                        Flexible(
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                            decoration: BoxDecoration(
+                              color: isDark
+                                  ? const Color(0xFF282D39)
+                                  : const Color(0xFFF3F1EC),
+                              borderRadius: BorderRadius.circular(5),
+                            ),
+                            child: Text(
+                              listing.category,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                fontSize: 10,
+                                fontWeight: FontWeight.w700,
+                                color: isDark
+                                    ? Colors.grey.shade300
+                                    : const Color(0xFF565D6D),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 4),
+                    Row(
+                      children: [
                         const Icon(Icons.place_outlined, size: 11, color: Color(0xFF7D8394)),
                         const SizedBox(width: 2),
                         Expanded(
@@ -896,40 +884,6 @@ class _ListingCardState extends State<_ListingCard> {
       ),
     );
   }
-
-  Widget _categoryIcon(String category) {
-    final icons = {
-      'Books': Icons.menu_book_rounded,
-      'Electronics': Icons.devices_other_rounded,
-      'Fashion': Icons.checkroom_rounded,
-      'Sports': Icons.sports_basketball_rounded,
-      'Furniture': Icons.chair_rounded,
-    };
-    return Center(
-      child: Icon(
-        icons[category] ?? Icons.category_rounded,
-        size: 52,
-        color: Colors.white.withValues(alpha: 0.92),
-      ),
-    );
-  }
-
-  LinearGradient _categoryGradient(String category) {
-    const palettes = {
-      'Books': [Color(0xFF4E5A58), Color(0xFF7C8986)],
-      'Electronics': [Color(0xFF667B72), Color(0xFF91A49D)],
-      'Fashion': [Color(0xFF9A815A), Color(0xFFBEA984)],
-      'Sports': [Color(0xFF4A5565), Color(0xFF818B99)],
-      'Furniture': [Color(0xFF806D57), Color(0xFFA99980)],
-      'Other': [Color(0xFF697184), Color(0xFFA1A7B5)],
-    };
-    final colors = palettes[category] ?? palettes['Other']!;
-    return LinearGradient(
-      begin: Alignment.topLeft,
-      end: Alignment.bottomRight,
-      colors: colors,
-    );
-  }
 }
 
 class ListingDetailSheet extends StatefulWidget {
@@ -985,12 +939,13 @@ class _ListingDetailSheetState extends State<ListingDetailSheet> {
     super.dispose();
   }
 
-  void _openDirectChat(BuildContext context, User currentUser) {
-    final buyerId = currentUser.uid;
+  void _openDirectChat(BuildContext context, AuthProvider auth) {
+    final buyerId = auth.uid;
+    if (buyerId == null) return;
     final dir = context.read<ProfileDirectoryProvider>();
     final buyerName = dir.nameFor(
       buyerId,
-      fallback: currentUser.displayName ?? 'Buyer',
+      fallback: auth.displayName,
     );
     final buyerPhoto = dir.photoFor(buyerId);
     final threadId = context.read<ChatProvider>().threadIdFor(widget.listing.id, buyerId);
@@ -1016,11 +971,12 @@ class _ListingDetailSheetState extends State<ListingDetailSheet> {
   Widget _buildStickyActionBar(
     BuildContext context,
     OfferProvider offers,
-    User? currentUser,
+    AuthProvider auth,
+    SellProvider sell,
     bool isOwner,
     bool isDark,
   ) {
-    final isGuest = currentUser == null;
+    final isGuest = !auth.isSignedIn;
     if (isGuest) {
       return Container(
         padding: const EdgeInsets.fromLTRB(20, 12, 20, 16),
@@ -1050,10 +1006,143 @@ class _ListingDetailSheetState extends State<ListingDetailSheet> {
       );
     }
 
-    if (isOwner || !widget.listing.isAvailable) return const SizedBox.shrink();
+    if (isOwner) {
+      final messenger = ScaffoldMessenger.of(context);
+      final navigator = Navigator.of(context);
+      return Container(
+        padding: const EdgeInsets.fromLTRB(20, 12, 20, 16),
+        decoration: BoxDecoration(
+          color: isDark ? const Color(0xFF1A1D24) : Colors.white,
+          border: Border(
+            top: BorderSide(color: isDark ? const Color(0xFF2E3442) : const Color(0xFFE7E4DC)),
+          ),
+        ),
+        child: Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          alignment: WrapAlignment.end,
+          children: [
+            if (!widget.listing.isSold)
+              OutlinedButton.icon(
+                onPressed: sell.busy
+                    ? null
+                    : () => showModalBottomSheet(
+                          context: context,
+                          isScrollControlled: true,
+                          backgroundColor: Colors.transparent,
+                          builder: (_) => CreateListingSheet(editing: widget.listing),
+                        ),
+                icon: const Icon(Icons.edit_outlined, size: 16),
+                label: const Text('Edit'),
+              ),
+            if (widget.listing.isAvailable)
+              OutlinedButton.icon(
+                onPressed: sell.busy
+                    ? null
+                    : () async {
+                        final ok = await sell.reserveListing(widget.listing);
+                        if (!mounted) return;
+                        messenger.showSnackBar(
+                          SnackBar(
+                            content: Text(
+                              ok ? 'Listing marked reserved.' : (sell.error ?? 'Action failed'),
+                            ),
+                          ),
+                        );
+                        if (ok) navigator.pop();
+                      },
+                icon: const Icon(Icons.bookmark_added_outlined, size: 16),
+                label: const Text('Reserve'),
+              ),
+            if (widget.listing.isReserved)
+              OutlinedButton.icon(
+                onPressed: sell.busy
+                    ? null
+                    : () async {
+                        final ok = await sell.releaseReservedListing(widget.listing);
+                        if (!mounted) return;
+                        messenger.showSnackBar(
+                          SnackBar(
+                            content: Text(
+                              ok ? 'Reservation released.' : (sell.error ?? 'Action failed'),
+                            ),
+                          ),
+                        );
+                        if (ok) navigator.pop();
+                      },
+                icon: const Icon(Icons.lock_open_rounded, size: 16),
+                label: const Text('Release'),
+              ),
+            if (!widget.listing.isSold)
+              FilledButton.icon(
+                onPressed: sell.busy
+                    ? null
+                    : () async {
+                        final ok = await sell.markSold(widget.listing);
+                        if (!mounted) return;
+                        messenger.showSnackBar(
+                          SnackBar(
+                            content: Text(
+                              ok ? 'Listing marked sold.' : (sell.error ?? 'Action failed'),
+                            ),
+                          ),
+                        );
+                        if (ok) navigator.pop();
+                      },
+                style: FilledButton.styleFrom(backgroundColor: const Color(0xFF24A889)),
+                icon: const Icon(Icons.check_circle_outline_rounded, size: 16),
+                label: const Text('Mark Sold'),
+              ),
+            IconButton(
+              tooltip: 'Delete listing',
+              onPressed: sell.busy
+                  ? null
+                  : () async {
+                      final confirmed = await showDialog<bool>(
+                        context: context,
+                        builder: (_) => AlertDialog(
+                          title: const Text('Delete listing?'),
+                          content: const Text(
+                            'This hides the listing from Discover permanently.',
+                          ),
+                          actions: [
+                            TextButton(
+                              onPressed: () => Navigator.pop(context, false),
+                              child: const Text('Cancel'),
+                            ),
+                            FilledButton(
+                              onPressed: () => Navigator.pop(context, true),
+                              style: FilledButton.styleFrom(
+                                backgroundColor: const Color(0xFFD94B64),
+                              ),
+                              child: const Text('Delete'),
+                            ),
+                          ],
+                        ),
+                      );
+                      if (confirmed != true) return;
+                      final ok = await sell.deleteListing(widget.listing);
+                      if (!mounted) return;
+                      messenger.showSnackBar(
+                        SnackBar(
+                          content: Text(
+                            ok ? 'Listing deleted.' : (sell.error ?? 'Delete failed'),
+                          ),
+                        ),
+                      );
+                      if (ok) navigator.pop();
+                    },
+              icon: const Icon(Icons.delete_outline_rounded, color: Color(0xFFD94B64)),
+            ),
+          ],
+        ),
+      );
+    }
+
+    if (!widget.listing.isAvailable) return const SizedBox.shrink();
 
     return Container(
-      padding: const EdgeInsets.fromLTRB(20, 12, 20, 16),
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
       decoration: BoxDecoration(
         color: isDark ? const Color(0xFF1A1D24) : Colors.white,
         border: Border(
@@ -1062,23 +1151,50 @@ class _ListingDetailSheetState extends State<ListingDetailSheet> {
       ),
       child: Row(
         children: [
-          OutlinedButton.icon(
-            onPressed: () => _openDirectChat(context, currentUser),
-            icon: const Icon(Icons.chat_bubble_outline_rounded, size: 18),
-            label: const Text('Chat'),
-            style: OutlinedButton.styleFrom(
-              padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
+          IconButton.outlined(
+            tooltip: 'Chat with seller',
+            onPressed: () => _openDirectChat(context, auth),
+            icon: const Icon(Icons.chat_bubble_outline_rounded, size: 19),
+            style: IconButton.styleFrom(
+              padding: const EdgeInsets.all(12),
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
             ),
           ),
-          const SizedBox(width: 10),
+          const SizedBox(width: 8),
+          if (widget.listing.negotiable) ...[
+            Expanded(
+              child: OutlinedButton(
+                onPressed: submitting || offers.busy
+                    ? null
+                    : () => _handleSubmitOffer(context, offers),
+                style: OutlinedButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 8),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                ),
+                child: const Text(
+                  'Make Offer',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(fontWeight: FontWeight.w800, fontSize: 13.5),
+                ),
+              ),
+            ),
+            const SizedBox(width: 8),
+          ],
           Expanded(
+            flex: widget.listing.negotiable ? 1 : 2,
             child: FilledButton(
-              onPressed: submitting || offers.busy ? null : () => _handleSubmitOffer(context, offers),
+              onPressed: submitting || offers.busy
+                  ? null
+                  : () => _handleSubmitOffer(
+                        context,
+                        offers,
+                        overrideAmount: widget.listing.price,
+                      ),
               style: FilledButton.styleFrom(
                 backgroundColor: const Color(0xFF252832),
                 foregroundColor: Colors.white,
-                padding: const EdgeInsets.symmetric(vertical: 14),
+                padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 8),
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
               ),
               child: submitting || offers.busy
@@ -1088,10 +1204,10 @@ class _ListingDetailSheetState extends State<ListingDetailSheet> {
                       child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
                     )
                   : Text(
-                      widget.listing.negotiable
-                          ? 'Submit Offer'
-                          : 'Order at ${AppFormatters.formatBDT(widget.listing.price)}',
-                      style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 15),
+                      'Buy at ${AppFormatters.formatBDT(widget.listing.price)}',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 13.5),
                     ),
             ),
           ),
@@ -1133,9 +1249,7 @@ class _ListingDetailSheetState extends State<ListingDetailSheet> {
           ListingPhotoGallery(
             images: widget.listing.galleryImages,
             height: 230,
-            fallback: const Center(
-              child: Icon(Icons.inventory_2_outlined, size: 54, color: Color(0xFF667B72)),
-            ),
+            fallback: ListingCategoryArtwork.fallback(widget.listing.category, iconSize: 54),
           ),
           const SizedBox(height: 16),
         ],
@@ -1169,7 +1283,7 @@ class _ListingDetailSheetState extends State<ListingDetailSheet> {
                 );
               },
             ),
-            if (!isOwner && FirebaseAuth.instance.currentUser != null)
+            if (!isOwner && context.watch<AuthProvider>().isSignedIn)
               IconButton(
                 tooltip: 'Report listing',
                 icon: const Icon(
@@ -1246,11 +1360,15 @@ class _ListingDetailSheetState extends State<ListingDetailSheet> {
           children: [
             const Icon(Icons.location_on_outlined, size: 15, color: Color(0xFF777D8E)),
             const SizedBox(width: 4),
-            Text(
-              '${widget.listing.location} · Posted ${AppFormatters.formatRelativeTime(createdDate)}',
-              style: TextStyle(
-                color: isDark ? Colors.grey.shade400 : const Color(0xFF777D8E),
-                fontSize: 12,
+            Expanded(
+              child: Text(
+                '${widget.listing.location} · Posted ${AppFormatters.formatRelativeTime(createdDate)}',
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  color: isDark ? Colors.grey.shade400 : const Color(0xFF777D8E),
+                  fontSize: 12,
+                ),
               ),
             ),
           ],
@@ -1307,12 +1425,25 @@ class _ListingDetailSheetState extends State<ListingDetailSheet> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        widget.listing.sellerName,
+                        context.watch<ProfileDirectoryProvider>().nameFor(
+                              widget.listing.sellerId,
+                              fallback: widget.listing.sellerName,
+                            ),
                         style: const TextStyle(fontWeight: FontWeight.w700),
                       ),
-                      const Text(
-                        'View seller rating, reviews & active items',
-                        style: TextStyle(fontSize: 12, color: Color(0xFF667B72)),
+                      Row(
+                        children: [
+                          const Icon(Icons.star_rounded, size: 13, color: Color(0xFFC69C55)),
+                          const SizedBox(width: 3),
+                          Flexible(
+                            child: Text(
+                              '${context.watch<ProfileDirectoryProvider>().ratingSummaryFor(widget.listing.sellerId)} · Tap for profile',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(fontSize: 12, color: Color(0xFF667B72)),
+                            ),
+                          ),
+                        ],
                       ),
                     ],
                   ),
@@ -1321,8 +1452,15 @@ class _ListingDetailSheetState extends State<ListingDetailSheet> {
                   onPressed: () async {
                     final ok = await listingProvider.toggleFavorite(widget.listing);
                     if (!ok && context.mounted) {
+                      final isSignedIn = context.read<AuthProvider>().isSignedIn;
                       ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text('Sign in to save items')),
+                        SnackBar(
+                          content: Text(
+                            isSignedIn
+                                ? (listingProvider.error ?? 'Could not update saved item')
+                                : 'Sign in to save items',
+                          ),
+                        ),
                       );
                     }
                   },
@@ -1337,7 +1475,7 @@ class _ListingDetailSheetState extends State<ListingDetailSheet> {
             ),
           ),
         ),
-        if (!isOwner && widget.listing.isAvailable && FirebaseAuth.instance.currentUser != null) ...[
+        if (!isOwner && widget.listing.isAvailable && context.watch<AuthProvider>().isSignedIn) ...[
           const SizedBox(height: 14),
           if (widget.listing.negotiable) ...[
             const Text(
@@ -1384,11 +1522,24 @@ class _ListingDetailSheetState extends State<ListingDetailSheet> {
           ),
         ],
         if (isOwner)
-          const Padding(
-            padding: EdgeInsets.only(top: 16),
-            child: Text(
-              'Manage or edit this listing from the Sell tab.',
-              style: TextStyle(color: Color(0xFF777D8E)),
+          Container(
+            margin: const EdgeInsets.only(top: 16),
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: const Color(0xFF667B72).withValues(alpha: 0.10),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: const Row(
+              children: [
+                Icon(Icons.storefront_outlined, size: 17, color: Color(0xFF667B72)),
+                SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'This is your listing. Use the actions below to edit, reserve, mark sold, or remove it.',
+                    style: TextStyle(fontSize: 12.5, color: Color(0xFF4F6058), fontWeight: FontWeight.w600),
+                  ),
+                ),
+              ],
             ),
           ),
         const SizedBox(height: 18),
@@ -1405,8 +1556,9 @@ class _ListingDetailSheetState extends State<ListingDetailSheet> {
   Widget build(BuildContext context) {
     final offers = context.watch<OfferProvider>();
     final listingProvider = context.watch<ListingProvider>();
-    final currentUser = FirebaseAuth.instance.currentUser;
-    final isOwner = currentUser?.uid == widget.listing.sellerId;
+    final sellProvider = context.watch<SellProvider>();
+    final auth = context.watch<AuthProvider>();
+    final isOwner = auth.uid != null && auth.uid == widget.listing.sellerId;
     final isDark = Theme.of(context).brightness == Brightness.dark;
 
     if (widget.isDesktopDialog) {
@@ -1427,9 +1579,7 @@ class _ListingDetailSheetState extends State<ListingDetailSheet> {
                       child: ListingPhotoGallery(
                         images: widget.listing.galleryImages,
                         height: 520,
-                        fallback: const Center(
-                          child: Icon(Icons.inventory_2_outlined, size: 72, color: Color(0xFF667B72)),
-                        ),
+                        fallback: ListingCategoryArtwork.fallback(widget.listing.category, iconSize: 72),
                       ),
                     ),
                   ),
@@ -1447,7 +1597,7 @@ class _ListingDetailSheetState extends State<ListingDetailSheet> {
                           includeGallery: false,
                         ),
                       ),
-                      _buildStickyActionBar(context, offers, currentUser, isOwner, isDark),
+                      _buildStickyActionBar(context, offers, auth, sellProvider, isOwner, isDark),
                     ],
                   ),
                 ),
@@ -1482,7 +1632,7 @@ class _ListingDetailSheetState extends State<ListingDetailSheet> {
                     controller: scrollController,
                   ),
                 ),
-                _buildStickyActionBar(context, offers, currentUser, isOwner, isDark),
+                _buildStickyActionBar(context, offers, auth, sellProvider, isOwner, isDark),
               ],
             ),
           ),
@@ -1491,15 +1641,43 @@ class _ListingDetailSheetState extends State<ListingDetailSheet> {
     );
   }
 
-  Future<void> _handleSubmitOffer(BuildContext context, OfferProvider offers) async {
-    final value = widget.listing.negotiable
-        ? int.tryParse(amount.text.trim())
-        : widget.listing.price;
+  Future<void> _handleSubmitOffer(
+    BuildContext context,
+    OfferProvider offers, {
+    int? overrideAmount,
+  }) async {
+    final value = overrideAmount ??
+        (widget.listing.negotiable
+            ? int.tryParse(amount.text.trim())
+            : widget.listing.price);
     if (value == null || value <= 0) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Enter a valid offer amount greater than zero')),
       );
       return;
+    }
+
+    if (value > widget.listing.price) {
+      final proceedAboveAsk = await showDialog<bool>(
+        context: context,
+        builder: (_) => AlertDialog(
+          title: const Text('Offer exceeds asking price'),
+          content: Text(
+            'Your offer of ${AppFormatters.formatBDT(value)} is above the seller\'s asking price (${AppFormatters.formatBDT(widget.listing.price)}). Do you still want to submit it?',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Adjust'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Submit Offer'),
+            ),
+          ],
+        ),
+      );
+      if (proceedAboveAsk != true || !context.mounted) return;
     }
 
     final messenger = ScaffoldMessenger.of(context);
@@ -1550,7 +1728,6 @@ class _ListingDetailSheetState extends State<ListingDetailSheet> {
         message.text,
         feePaid: feeTxnId.isNotEmpty,
         feeTransactionId: feeTxnId,
-        paymentId: paymentDocId ?? '',
       );
       if (!mounted) return;
       messenger.showSnackBar(
@@ -1697,7 +1874,8 @@ class _ListingCommentsSectionState extends State<_ListingCommentsSection> {
 
   @override
   Widget build(BuildContext context) {
-    final currentUser = FirebaseAuth.instance.currentUser;
+    final auth = context.watch<AuthProvider>();
+    final currentUid = auth.uid;
     final dir = context.watch<ProfileDirectoryProvider>();
 
     return Column(
@@ -1857,9 +2035,9 @@ class _ListingCommentsSectionState extends State<_ListingCommentsSection> {
                             ],
                           ),
                         ),
-                        if (currentUser != null &&
-                            (currentUser.uid == c.authorId ||
-                                currentUser.uid == widget.listing.sellerId))
+                        if (currentUid != null &&
+                            (currentUid == c.authorId ||
+                                currentUid == widget.listing.sellerId))
                           IconButton(
                             tooltip: 'Delete comment',
                             icon: const Icon(
@@ -1879,15 +2057,15 @@ class _ListingCommentsSectionState extends State<_ListingCommentsSection> {
             );
           },
         ),
-        if (currentUser != null) ...[
+        if (currentUid != null) ...[
           const SizedBox(height: 10),
           Row(
             children: [
               UserAvatar(
-                uid: currentUser.uid,
+                uid: currentUid,
                 name: dir.nameFor(
-                  currentUser.uid,
-                  fallback: currentUser.displayName ?? 'Me',
+                  currentUid,
+                  fallback: auth.displayName,
                 ),
                 radius: 16,
               ),

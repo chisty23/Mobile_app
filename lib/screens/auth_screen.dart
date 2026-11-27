@@ -4,7 +4,6 @@ import 'package:provider/provider.dart';
 import '../providers/app_providers.dart';
 import '../utils/app_typography.dart';
 import '../utils/formatters.dart';
-import '../utils/photo_picker.dart';
 import '../widgets/animated_ui.dart';
 import '../widgets/legal_dialog.dart';
 import '../widgets/smart_image.dart';
@@ -28,13 +27,14 @@ class _AuthScreenState extends State<AuthScreen> {
   /// Phone registration sub-mode: `false` = Phone + Account Gmail + Password, `true` = SMS OTP.
   bool _phoneSmsOtpMode = false;
   bool _otpSent = false;
-  String _signupPhoto = '';
 
   final name = TextEditingController();
   final email = TextEditingController();
   final recoveryGmail = TextEditingController();
   final password = TextEditingController();
   final department = TextEditingController();
+  final hostel = TextEditingController();
+  final photoUrl = TextEditingController();
   final phone = TextEditingController();
   final smsCode = TextEditingController();
 
@@ -45,15 +45,11 @@ class _AuthScreenState extends State<AuthScreen> {
     recoveryGmail.dispose();
     password.dispose();
     department.dispose();
+    hostel.dispose();
+    photoUrl.dispose();
     phone.dispose();
     smsCode.dispose();
     super.dispose();
-  }
-
-  Future<void> _pickSignupAvatar() async {
-    final picked = await pickCompressedImages(maxCount: 1);
-    if (!mounted || picked.isEmpty) return;
-    setState(() => _signupPhoto = picked.first);
   }
 
   Future<void> _showForgotPasswordDialog() async {
@@ -255,6 +251,7 @@ class _AuthScreenState extends State<AuthScreen> {
         rawPhone: phone.text,
         name: name.text,
         department: department.text,
+        hostel: hostel.text,
         recoveryGmail: recoveryGmail.text,
       );
       if (!ok && mounted) {
@@ -275,8 +272,9 @@ class _AuthScreenState extends State<AuthScreen> {
         email: accountGmail,
         password: password.text,
         department: department.text,
+        hostel: hostel.text,
         phone: phone.text,
-        photoRaw: _signupPhoto,
+        photoRaw: photoUrl.text.trim(),
         accountMode: _registerMode,
       );
     } else {
@@ -435,74 +433,68 @@ class _AuthScreenState extends State<AuthScreen> {
                         const SizedBox(height: 18),
 
                         if (register) ...[
-                          // Optional Profile Photo Picker at Sign-Up
+                          // Live Avatar Preview (External HTTPS URL + Initials Fallback)
                           Center(
                             child: Column(
                               children: [
-                                Stack(
-                                  children: [
-                                    InkWell(
-                                      onTap: _pickSignupAvatar,
-                                      borderRadius: BorderRadius.circular(99),
-                                      child: Container(
-                                        width: 76,
-                                        height: 76,
-                                        decoration: BoxDecoration(
-                                          shape: BoxShape.circle,
-                                          color: isDark
-                                              ? const Color(0xFF262B37)
-                                              : const Color(0xFFF3F1EC),
-                                          border: Border.all(
-                                            color: const Color(0xFF667B72)
-                                                .withValues(alpha: 0.45),
-                                            width: 1.5,
-                                          ),
-                                        ),
-                                        child: ClipOval(
-                                          child: _signupPhoto.isNotEmpty
-                                              ? SmartListingImage(
-                                                  imageUrl: _signupPhoto,
-                                                  fit: BoxFit.cover,
-                                                  fallback: const Icon(
-                                                    Icons.person_outline_rounded,
-                                                    size: 34,
-                                                    color: Color(0xFF667B72),
-                                                  ),
-                                                )
-                                              : const Icon(
-                                                  Icons.person_outline_rounded,
-                                                  size: 34,
-                                                  color: Color(0xFF667B72),
+                                Container(
+                                  width: 72,
+                                  height: 72,
+                                  decoration: BoxDecoration(
+                                    shape: BoxShape.circle,
+                                    color: isDark
+                                        ? const Color(0xFF262B37)
+                                        : const Color(0xFF252832),
+                                    border: Border.all(
+                                      color: const Color(0xFF667B72)
+                                          .withValues(alpha: 0.45),
+                                      width: 1.5,
+                                    ),
+                                  ),
+                                  child: ClipOval(
+                                    child: AppFormatters.isValidHttpsImageUrl(
+                                      photoUrl.text,
+                                    )
+                                        ? SmartListingImage(
+                                            imageUrl: photoUrl.text.trim(),
+                                            fit: BoxFit.cover,
+                                            fallback: Center(
+                                              child: Text(
+                                                name.text.trim().isNotEmpty
+                                                    ? name.text
+                                                        .trim()[0]
+                                                        .toUpperCase()
+                                                    : '?',
+                                                style: AppTypography.display(
+                                                  size: 26,
+                                                  color: Colors.white,
                                                 ),
-                                        ),
-                                      ),
-                                    ),
-                                    Positioned(
-                                      right: 0,
-                                      bottom: 0,
-                                      child: GestureDetector(
-                                        onTap: _pickSignupAvatar,
-                                        child: Container(
-                                          padding: const EdgeInsets.all(6),
-                                          decoration: const BoxDecoration(
-                                            color: Color(0xFF252832),
-                                            shape: BoxShape.circle,
+                                              ),
+                                            ),
+                                          )
+                                        : Center(
+                                            child: name.text.trim().isNotEmpty
+                                                ? Text(
+                                                    name.text
+                                                        .trim()[0]
+                                                        .toUpperCase(),
+                                                    style:
+                                                        AppTypography.display(
+                                                      size: 26,
+                                                      color: Colors.white,
+                                                    ),
+                                                  )
+                                                : const Icon(
+                                                    Icons.person_outline_rounded,
+                                                    size: 32,
+                                                    color: Colors.white70,
+                                                  ),
                                           ),
-                                          child: const Icon(
-                                            Icons.camera_alt_rounded,
-                                            size: 14,
-                                            color: Colors.white,
-                                          ),
-                                        ),
-                                      ),
-                                    ),
-                                  ],
+                                  ),
                                 ),
                                 const SizedBox(height: 6),
                                 Text(
-                                  _signupPhoto.isEmpty
-                                      ? 'Add profile picture (optional)'
-                                      : 'Tap to change photo',
+                                  'Optional HTTPS avatar URL (initials used if blank)',
                                   style: TextStyle(
                                     fontSize: 11.5,
                                     fontWeight: FontWeight.w600,
@@ -514,7 +506,37 @@ class _AuthScreenState extends State<AuthScreen> {
                               ],
                             ),
                           ),
-                          const SizedBox(height: 16),
+                          const SizedBox(height: 12),
+                          TextFormField(
+                            controller: photoUrl,
+                            keyboardType: TextInputType.url,
+                            onChanged: (_) => setState(() {}),
+                            validator:
+                                AppFormatters.validateOptionalHttpsImageUrl,
+                            style: TextStyle(
+                              color: isDark ? Colors.white : Colors.black87,
+                            ),
+                            decoration: InputDecoration(
+                              labelText:
+                                  'Profile Photo URL (optional https://...)',
+                              prefixIcon: Icon(
+                                Icons.link_rounded,
+                                color: isDark
+                                    ? Colors.grey.shade400
+                                    : const Color(0xFF626779),
+                              ),
+                              filled: true,
+                              fillColor: isDark
+                                  ? const Color(0xFF262B37)
+                                  : const Color(0xFFF7F8FC),
+                              errorMaxLines: 2,
+                              border: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(16),
+                                borderSide: BorderSide.none,
+                              ),
+                            ),
+                          ),
+                          const SizedBox(height: 14),
 
                           // Gmail vs Phone Selector for New Accounts
                           Container(
@@ -689,11 +711,26 @@ class _AuthScreenState extends State<AuthScreen> {
                             ],
                           ],
                           const SizedBox(height: 12),
-                          _formField(
-                            controller: department,
-                            label: 'Campus / Area (e.g. BUET CSE, Dhanmondi)',
-                            icon: Icons.location_on_outlined,
-                            isDark: isDark,
+                          Row(
+                            children: [
+                              Expanded(
+                                child: _formField(
+                                  controller: department,
+                                  label: 'Department (optional)',
+                                  icon: Icons.school_outlined,
+                                  isDark: isDark,
+                                ),
+                              ),
+                              const SizedBox(width: 10),
+                              Expanded(
+                                child: _formField(
+                                  controller: hostel,
+                                  label: 'Hostel / Hall (optional)',
+                                  icon: Icons.apartment_outlined,
+                                  isDark: isDark,
+                                ),
+                              ),
+                            ],
                           ),
                           const SizedBox(height: 12),
                         ] else ...[

@@ -1,4 +1,3 @@
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -6,7 +5,6 @@ import '../models.dart';
 import '../providers/app_providers.dart';
 import '../utils/app_typography.dart';
 import '../utils/formatters.dart';
-import '../utils/photo_picker.dart';
 import '../widgets/animated_ui.dart';
 import '../widgets/payment_checkout_sheet.dart';
 import '../widgets/smart_image.dart';
@@ -63,19 +61,20 @@ class SellScreen extends StatelessWidget {
                                   const SizedBox(height: 2),
                                   Builder(
                                     builder: (context) {
-                                      final me = FirebaseAuth.instance.currentUser;
+                                      final auth = context.watch<AuthProvider>();
+                                      final me = auth.uid;
                                       final dir = context.watch<ProfileDirectoryProvider>();
                                       final myName = me == null
                                           ? 'Manage prices & photos'
                                           : dir.nameFor(
-                                              me.uid,
-                                              fallback: me.displayName ?? 'Seller',
+                                              me,
+                                              fallback: auth.displayName,
                                             );
                                       return Row(
                                         children: [
                                           if (me != null) ...[
                                             UserAvatar(
-                                              uid: me.uid,
+                                              uid: me,
                                               name: myName,
                                               radius: 10,
                                             ),
@@ -84,7 +83,7 @@ class SellScreen extends StatelessWidget {
                                           Flexible(
                                             child: Text(
                                               me == null
-                                                  ? 'Manage prices, photos, and availability'
+                                                  ? 'Manage prices, links, and availability'
                                                   : 'Posting as $myName · Manage items',
                                               overflow: TextOverflow.ellipsis,
                                               style: TextStyle(
@@ -220,6 +219,7 @@ class _MyListingCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final provider = context.watch<SellProvider>();
+    final pendingCount = provider.pendingOfferCountFor(listing.id);
     final isDark = Theme.of(context).brightness == Brightness.dark;
 
     return Container(
@@ -235,15 +235,15 @@ class _MyListingCard extends StatelessWidget {
         children: [
           ClipRRect(
             borderRadius: BorderRadius.circular(14),
-            child: Container(
+            child: SizedBox(
               width: 68,
               height: 68,
-              color: const Color(0xFF667B72).withValues(alpha: 0.14),
               child: SmartListingImage(
                 imageUrl: listing.imageUrl,
                 fit: BoxFit.cover,
-                fallback: const Center(
-                  child: Icon(Icons.inventory_2_outlined, color: Color(0xFF667B72)),
+                fallback: ListingCategoryArtwork.fallback(
+                  listing.category,
+                  iconSize: 30,
                 ),
               ),
             ),
@@ -324,13 +324,33 @@ class _MyListingCard extends StatelessWidget {
                         ),
                       ),
                     ],
+                    if (pendingCount > 0) ...[
+                      const SizedBox(width: 8),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFF2A14A).withValues(alpha: 0.16),
+                          borderRadius: BorderRadius.circular(99),
+                        ),
+                        child: Text(
+                          '$pendingCount active ${pendingCount == 1 ? 'offer' : 'offers'}',
+                          style: const TextStyle(
+                            fontSize: 10.5,
+                            fontWeight: FontWeight.w800,
+                            color: Color(0xFFD9822B),
+                          ),
+                        ),
+                      ),
+                    ],
                   ],
                 ),
               ],
             ),
           ),
           PopupMenuButton<String>(
+            enabled: !provider.busy,
             onSelected: (value) async {
+              final messenger = ScaffoldMessenger.of(context);
               if (value == 'edit') {
                 showModalBottomSheet(
                   context: context,
@@ -344,7 +364,7 @@ class _MyListingCard extends StatelessWidget {
                   builder: (_) => AlertDialog(
                     title: const Text('Delete listing?'),
                     content: const Text(
-                      'This removes it permanently from the marketplace.',
+                      'This removes it from Discover and keeps saved history safely flagged.',
                     ),
                     actions: [
                       TextButton(
@@ -361,9 +381,44 @@ class _MyListingCard extends StatelessWidget {
                     ],
                   ),
                 );
-                if (confirmed == true) await provider.deleteListing(listing);
+                if (confirmed == true) {
+                  final ok = await provider.deleteListing(listing);
+                  if (context.mounted) {
+                    messenger.showSnackBar(
+                      SnackBar(
+                        content: Text(
+                          ok ? 'Listing deleted.' : (provider.error ?? 'Could not delete listing'),
+                        ),
+                      ),
+                    );
+                  }
+                }
+              } else if (value == 'reserve') {
+                final ok = await provider.reserveListing(listing);
+                if (context.mounted) {
+                  messenger.showSnackBar(
+                    SnackBar(
+                      content: Text(
+                        ok
+                            ? 'Listing marked reserved.'
+                            : (provider.error ?? 'Could not reserve listing'),
+                      ),
+                    ),
+                  );
+                }
               } else if (value == 'available') {
-                await provider.updateStatus(listing, 'available');
+                final ok = await provider.releaseReservedListing(listing);
+                if (context.mounted) {
+                  messenger.showSnackBar(
+                    SnackBar(
+                      content: Text(
+                        ok
+                            ? 'Listing is available again.'
+                            : (provider.error ?? 'Could not release listing'),
+                      ),
+                    ),
+                  );
+                }
               } else if (value == 'sold') {
                 final hasBuyer = listing.reservedFor.isNotEmpty;
                 final confirmed = await showDialog<bool>(
@@ -388,14 +443,16 @@ class _MyListingCard extends StatelessWidget {
                   ),
                 );
                 if (confirmed == true) {
-                  await provider.updateStatus(listing, 'sold');
+                  final ok = await provider.markSold(listing);
                   if (context.mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(
+                    messenger.showSnackBar(
                       SnackBar(
                         content: Text(
-                          hasBuyer
-                              ? 'Sale completed! Verified profile stats updated.'
-                              : 'Listing marked as sold.',
+                          ok
+                              ? (hasBuyer
+                                  ? 'Sale completed! Verified profile stats updated.'
+                                  : 'Listing marked as sold.')
+                              : (provider.error ?? 'Could not mark sold'),
                         ),
                       ),
                     );
@@ -414,6 +471,11 @@ class _MyListingCard extends StatelessWidget {
                       Text('Edit Details & Photos'),
                     ],
                   ),
+                ),
+              if (listing.isAvailable)
+                const PopupMenuItem(
+                  value: 'reserve',
+                  child: Text('Reserve Listing'),
                 ),
               if (listing.status != 'available')
                 const PopupMenuItem(
@@ -479,8 +541,6 @@ class _CreateListingSheetState extends State<CreateListingSheet> {
   String location = AppFormatters.listingLocations.first;
   bool negotiable = true;
   final List<String> _photos = [];
-  bool _pickingPhotos = false;
-  bool _showAdvancedLinks = false;
 
   @override
   void initState() {
@@ -509,36 +569,30 @@ class _CreateListingSheetState extends State<CreateListingSheet> {
     super.dispose();
   }
 
-  Future<void> _pickPhotosFromDevice() async {
-    final remaining = 3 - _photos.length;
-    if (remaining <= 0) {
+  void _addPhotoUrl() {
+    final raw = imageUrl.text.trim();
+    if (raw.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Maximum 3 photos per listing')),
+        const SnackBar(content: Text('Paste an external https:// image URL first')),
       );
       return;
     }
-    setState(() => _pickingPhotos = true);
-    try {
-      final picked = await pickCompressedImages(maxCount: remaining);
-      if (picked.isNotEmpty && mounted) {
-        setState(() => _photos.addAll(picked.take(remaining)));
-      }
-    } finally {
-      if (mounted) setState(() => _pickingPhotos = false);
-    }
-  }
-
-  void _addPhotoUrl() {
-    final raw = imageUrl.text.trim();
-    if (raw.isEmpty || Uri.tryParse(raw)?.hasScheme != true) {
+    final validationError = AppFormatters.validateOptionalHttpsImageUrl(raw);
+    if (validationError != null) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Enter a valid http/https image link')),
+        SnackBar(content: Text(validationError)),
       );
       return;
     }
     if (_photos.length >= 3) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Maximum 3 photos per listing')),
+      );
+      return;
+    }
+    if (_photos.contains(raw)) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('This photo link is already added')),
       );
       return;
     }
@@ -553,10 +607,6 @@ class _CreateListingSheetState extends State<CreateListingSheet> {
     final provider = context.watch<SellProvider>();
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final isEditing = widget.editing != null;
-
-    final relevantPresets = PresetCatalog.presets
-        .where((p) => p.category.toLowerCase() == category.toLowerCase())
-        .toList();
 
     return Center(
       child: ConstrainedBox(
@@ -609,19 +659,20 @@ class _CreateListingSheetState extends State<CreateListingSheet> {
                           const SizedBox(height: 3),
                           Builder(
                             builder: (context) {
-                              final me = FirebaseAuth.instance.currentUser;
+                              final auth = context.watch<AuthProvider>();
+                              final me = auth.uid;
                               final dir = context.watch<ProfileDirectoryProvider>();
                               final myName = me == null
-                                  ? 'Seller'
+                                  ? AppFormatters.unknownUserName
                                   : dir.nameFor(
-                                      me.uid,
-                                      fallback: me.displayName ?? 'Seller',
+                                      me,
+                                      fallback: auth.displayName,
                                     );
                               return Row(
                                 children: [
                                   if (me != null) ...[
                                     UserAvatar(
-                                      uid: me.uid,
+                                      uid: me,
                                       name: myName,
                                       radius: 10,
                                     ),
@@ -630,8 +681,8 @@ class _CreateListingSheetState extends State<CreateListingSheet> {
                                   Flexible(
                                     child: Text(
                                       isEditing
-                                          ? 'Update item details, pricing, or photos.'
-                                          : 'Posting publicly as $myName · Up to 3 photos.',
+                                          ? 'Update item details, pricing, or image links.'
+                                          : 'Posting publicly as $myName · Optional HTTPS links.',
                                       overflow: TextOverflow.ellipsis,
                                       style: TextStyle(
                                         color: isDark
@@ -651,106 +702,160 @@ class _CreateListingSheetState extends State<CreateListingSheet> {
                   ],
                 ),
                 const SizedBox(height: 18),
-                // Hero Photo Dropzone Box
-                InkWell(
-                  onTap: _pickingPhotos ? null : _pickPhotosFromDevice,
-                  borderRadius: BorderRadius.circular(18),
-                  child: Container(
-                    padding: const EdgeInsets.all(16),
-                    decoration: BoxDecoration(
-                      color: isDark ? const Color(0xFF1E222B) : Colors.white,
-                      borderRadius: BorderRadius.circular(18),
-                      border: Border.all(
-                        color: const Color(0xFF667B72).withValues(alpha: 0.45),
-                        width: 1.5,
-                      ),
+                Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: isDark ? const Color(0xFF1E222B) : Colors.white,
+                    borderRadius: BorderRadius.circular(18),
+                    border: Border.all(
+                      color: const Color(0xFF667B72).withValues(alpha: 0.35),
                     ),
-                    child: Column(
-                      children: [
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            if (_pickingPhotos)
-                              const SizedBox(
-                                width: 18,
-                                height: 18,
-                                child: CircularProgressIndicator(strokeWidth: 2),
-                              )
-                            else
-                              const Icon(Icons.add_a_photo_outlined, color: Color(0xFF667B72), size: 22),
-                            const SizedBox(width: 8),
-                            Text(
-                              'Upload Item Photos (${_photos.length}/3)',
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          const Icon(Icons.link_rounded, color: Color(0xFF667B72), size: 20),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              'Item Image URLs (${_photos.length}/3 optional)',
                               style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 14),
-                            ),
-                          ],
-                        ),
-                        const SizedBox(height: 4),
-                        const Text(
-                          'Items with real photos sell 4x faster — tap to add from device',
-                          textAlign: TextAlign.center,
-                          style: TextStyle(fontSize: 11, color: Color(0xFF777D8E)),
-                        ),
-                        if (_photos.isNotEmpty) ...[
-                          const SizedBox(height: 12),
-                          SizedBox(
-                            height: 86,
-                            child: ListView.separated(
-                              scrollDirection: Axis.horizontal,
-                              itemCount: _photos.length,
-                              separatorBuilder: (context, index) => const SizedBox(width: 10),
-                              itemBuilder: (context, i) => Stack(
-                                children: [
-                                  ClipRRect(
-                                    borderRadius: BorderRadius.circular(12),
-                                    child: SizedBox(
-                                      width: 86,
-                                      height: 86,
-                                      child: SmartListingImage(
-                                        imageUrl: _photos[i],
-                                        fit: BoxFit.cover,
-                                        fallback: const Icon(Icons.broken_image_outlined),
-                                      ),
-                                    ),
-                                  ),
-                                  if (i == 0)
-                                    Positioned(
-                                      left: 4,
-                                      bottom: 4,
-                                      child: Container(
-                                        padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
-                                        decoration: BoxDecoration(
-                                          color: Colors.black54,
-                                          borderRadius: BorderRadius.circular(5),
-                                        ),
-                                        child: const Text(
-                                          'Cover',
-                                          style: TextStyle(color: Colors.white, fontSize: 9, fontWeight: FontWeight.w700),
-                                        ),
-                                      ),
-                                    ),
-                                  Positioned(
-                                    top: 4,
-                                    right: 4,
-                                    child: GestureDetector(
-                                      onTap: () => setState(() => _photos.removeAt(i)),
-                                      child: Container(
-                                        padding: const EdgeInsets.all(4),
-                                        decoration: const BoxDecoration(
-                                          color: Colors.black54,
-                                          shape: BoxShape.circle,
-                                        ),
-                                        child: const Icon(Icons.close, color: Colors.white, size: 13),
-                                      ),
-                                    ),
-                                  ),
-                                ],
-                              ),
                             ),
                           ),
                         ],
-                      ],
-                    ),
+                      ),
+                      const SizedBox(height: 6),
+                      const Text(
+                        'Paste external https:// photo URLs, or leave empty to display a clean category artwork card.',
+                        style: TextStyle(fontSize: 11.5, color: Color(0xFF777D8E)),
+                      ),
+                      const SizedBox(height: 12),
+                      if (_photos.isEmpty)
+                        Container(
+                          height: 108,
+                          width: double.infinity,
+                          decoration: BoxDecoration(
+                            borderRadius: BorderRadius.circular(14),
+                            gradient: ListingCategoryArtwork.gradient(category),
+                          ),
+                          child: Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Icon(
+                                ListingCategoryArtwork.iconData(category),
+                                size: 42,
+                                color: Colors.white.withValues(alpha: 0.94),
+                              ),
+                              const SizedBox(height: 6),
+                              Text(
+                                '$category fallback artwork preview',
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 11.5,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                            ],
+                          ),
+                        )
+                      else
+                        SizedBox(
+                          height: 86,
+                          child: ListView.separated(
+                            scrollDirection: Axis.horizontal,
+                            itemCount: _photos.length,
+                            separatorBuilder: (context, index) => const SizedBox(width: 10),
+                            itemBuilder: (context, i) => Stack(
+                              children: [
+                                ClipRRect(
+                                  borderRadius: BorderRadius.circular(12),
+                                  child: SizedBox(
+                                    width: 86,
+                                    height: 86,
+                                    child: SmartListingImage(
+                                      imageUrl: _photos[i],
+                                      fit: BoxFit.cover,
+                                      fallback: ListingCategoryArtwork.fallback(category, iconSize: 28),
+                                    ),
+                                  ),
+                                ),
+                                if (i == 0)
+                                  Positioned(
+                                    left: 4,
+                                    bottom: 4,
+                                    child: Container(
+                                      padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+                                      decoration: BoxDecoration(
+                                        color: Colors.black54,
+                                        borderRadius: BorderRadius.circular(5),
+                                      ),
+                                      child: const Text(
+                                        'Cover',
+                                        style: TextStyle(
+                                          color: Colors.white,
+                                          fontSize: 9,
+                                          fontWeight: FontWeight.w700,
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                Positioned(
+                                  top: 4,
+                                  right: 4,
+                                  child: GestureDetector(
+                                    onTap: () => setState(() => _photos.removeAt(i)),
+                                    child: Container(
+                                      padding: const EdgeInsets.all(4),
+                                      decoration: const BoxDecoration(
+                                        color: Colors.black54,
+                                        shape: BoxShape.circle,
+                                      ),
+                                      child: const Icon(Icons.close, color: Colors.white, size: 13),
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      const SizedBox(height: 12),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: TextFormField(
+                              controller: imageUrl,
+                              keyboardType: TextInputType.url,
+                              onFieldSubmitted: (_) => _addPhotoUrl(),
+                              decoration: InputDecoration(
+                                labelText: 'https:// image URL',
+                                hintText: 'https://example.com/photo.jpg',
+                                prefixIcon: const Icon(Icons.add_link_rounded),
+                                filled: true,
+                                fillColor: isDark
+                                    ? const Color(0xFF181B22)
+                                    : const Color(0xFFF6F5F1),
+                                border: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(14),
+                                  borderSide: BorderSide.none,
+                                ),
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          FilledButton(
+                            onPressed: _photos.length >= 3 ? null : _addPhotoUrl,
+                            style: FilledButton.styleFrom(
+                              backgroundColor: const Color(0xFF667B72),
+                              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 16),
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                            ),
+                            child: const Text('Add'),
+                          ),
+                        ],
+                      ),
+                    ],
                   ),
                 ),
                 const SizedBox(height: 10),
@@ -830,88 +935,6 @@ class _CreateListingSheetState extends State<CreateListingSheet> {
                   },
                   decoration: _decoration('Price (৳)', Icons.payments_outlined, isDark),
                 ),
-                const SizedBox(height: 10),
-                InkWell(
-                  onTap: () => setState(() => _showAdvancedLinks = !_showAdvancedLinks),
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 6),
-                    child: Row(
-                      children: [
-                        Icon(
-                          _showAdvancedLinks ? Icons.expand_less : Icons.expand_more,
-                          size: 18,
-                          color: const Color(0xFF667B72),
-                        ),
-                        const SizedBox(width: 6),
-                        const Text(
-                          'Or add photo via URL / category preset',
-                          style: TextStyle(
-                            fontWeight: FontWeight.w700,
-                            fontSize: 12,
-                            color: Color(0xFF667B72),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-                if (_showAdvancedLinks) ...[
-                  const SizedBox(height: 8),
-                  SizedBox(
-                    height: 36,
-                    child: ListView(
-                      scrollDirection: Axis.horizontal,
-                      children: [
-                        for (final p in (relevantPresets.isNotEmpty
-                            ? relevantPresets
-                            : PresetCatalog.presets))
-                          Padding(
-                            padding: const EdgeInsets.only(right: 8),
-                            child: ActionChip(
-                              avatar: const Icon(Icons.photo_camera_outlined, size: 15),
-                              label: Text(p.name, style: const TextStyle(fontSize: 12)),
-                              onPressed: () {
-                                if (_photos.length < 3 && !_photos.contains(p.imageUrl)) {
-                                  setState(() => _photos.add(p.imageUrl));
-                                }
-                              },
-                            ),
-                          ),
-                      ],
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: TextFormField(
-                          controller: imageUrl,
-                          keyboardType: TextInputType.url,
-                          decoration: InputDecoration(
-                            labelText: 'Paste Image Link (optional)',
-                            prefixIcon: const Icon(Icons.link_rounded),
-                            filled: true,
-                            fillColor: isDark ? const Color(0xFF1E222B) : Colors.white,
-                            border: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(14),
-                              borderSide: BorderSide.none,
-                            ),
-                          ),
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      FilledButton(
-                        onPressed: _addPhotoUrl,
-                        style: FilledButton.styleFrom(
-                          backgroundColor: const Color(0xFF667B72),
-                          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 16),
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-                        ),
-                        child: const Text('Add'),
-                      ),
-                    ],
-                  ),
-                ],
                 const SizedBox(height: 8),
                 SwitchListTile(
                   contentPadding: EdgeInsets.zero,
@@ -1004,6 +1027,18 @@ class _CreateListingSheetState extends State<CreateListingSheet> {
     if (!_formKey.currentState!.validate()) return;
     final messenger = ScaffoldMessenger.of(context);
     final navigator = Navigator.of(context);
+    final pendingUrl = imageUrl.text.trim();
+    if (pendingUrl.isNotEmpty) {
+      final urlErr = AppFormatters.validateOptionalHttpsImageUrl(pendingUrl);
+      if (urlErr != null) {
+        messenger.showSnackBar(SnackBar(content: Text(urlErr)));
+        return;
+      }
+      if (_photos.length < 3 && !_photos.contains(pendingUrl)) {
+        _photos.add(pendingUrl);
+        imageUrl.clear();
+      }
+    }
     final value = int.parse(price.text.trim());
 
     if (isEditing) {
@@ -1068,7 +1103,6 @@ class _CreateListingSheetState extends State<CreateListingSheet> {
       imageUrl: _photos.isNotEmpty ? _photos.first : '',
       feePaid: feeTxnId.isNotEmpty,
       feeTransactionId: feeTxnId,
-      paymentId: paymentDocId ?? '',
     );
 
     if (!mounted) return;

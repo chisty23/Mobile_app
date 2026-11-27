@@ -1,4 +1,3 @@
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -51,6 +50,16 @@ class _ListingChatScreenState extends State<ListingChatScreen> {
   ];
 
   @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        context.read<ChatProvider>().markThreadRead(widget.threadId);
+      }
+    });
+  }
+
+  @override
   void dispose() {
     _msgController.dispose();
     _scrollController.dispose();
@@ -76,6 +85,7 @@ class _ListingChatScreenState extends State<ListingChatScreen> {
     );
     if (!mounted) return;
     if (ok) {
+      chat.markThreadRead(widget.threadId);
       if (overrideText == null) _msgController.clear();
       if (_scrollController.hasClients) {
         _scrollController.animateTo(
@@ -97,8 +107,7 @@ class _ListingChatScreenState extends State<ListingChatScreen> {
   Widget build(BuildContext context) {
     final chat = context.watch<ChatProvider>();
     final dir = context.watch<ProfileDirectoryProvider>();
-    final currentUser = FirebaseAuth.instance.currentUser;
-    final currentUid = currentUser?.uid ?? '';
+    final currentUid = context.watch<AuthProvider>().uid ?? '';
     final isBuyer = currentUid == widget.buyerId;
     final peerId = isBuyer ? widget.sellerId : widget.buyerId;
     final fallbackPeerName = isBuyer ? widget.sellerName : widget.buyerName;
@@ -379,7 +388,7 @@ class ChatsDrawerSheet extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final chat = context.watch<ChatProvider>();
-    final uid = FirebaseAuth.instance.currentUser?.uid ?? '';
+    final uid = context.watch<AuthProvider>().uid ?? '';
     final isDark = Theme.of(context).brightness == Brightness.dark;
 
     return DraggableScrollableSheet(
@@ -532,7 +541,8 @@ class _MessagesScreenState extends State<MessagesScreen> {
   @override
   Widget build(BuildContext context) {
     final chat = context.watch<ChatProvider>();
-    final uid = FirebaseAuth.instance.currentUser?.uid ?? '';
+    final dir = context.watch<ProfileDirectoryProvider>();
+    final uid = context.watch<AuthProvider>().uid ?? '';
     final isDark = Theme.of(context).brightness == Brightness.dark;
 
     final filtered = chat.threads.where((t) {
@@ -660,9 +670,16 @@ class _MessagesScreenState extends State<MessagesScreen> {
                           final t = filtered[i];
                           final isBuyer = t.buyerId == uid;
                           final peerId = isBuyer ? t.sellerId : t.buyerId;
-                          final peerName = isBuyer ? t.sellerName : t.buyerName;
-                          final peerPhoto =
-                              isBuyer ? t.sellerPhotoUrl : t.buyerPhotoUrl;
+                          final peerName = dir.nameFor(
+                            peerId,
+                            fallback: isBuyer ? t.sellerName : t.buyerName,
+                          );
+                          final peerPhoto = dir.photoFor(
+                            peerId,
+                            fallback: isBuyer ? t.sellerPhotoUrl : t.buyerPhotoUrl,
+                          );
+                          final unread =
+                              uid.isNotEmpty && chat.isThreadUnread(t);
                           return Material(
                             color: isDark ? const Color(0xFF1E222B) : Colors.white,
                             borderRadius: BorderRadius.circular(16),
@@ -724,14 +741,25 @@ class _MessagesScreenState extends State<MessagesScreen> {
                                                   ),
                                                 ),
                                               ),
-                                              Row(
-                                                mainAxisSize: MainAxisSize.min,
-                                                children: [
-                                                  const Icon(
-                                                    Icons.schedule_rounded,
-                                                    size: 12,
-                                                    color: Color(0xFF777D8E),
-                                                  ),
+                                                Row(
+                                                  mainAxisSize: MainAxisSize.min,
+                                                  children: [
+                                                    if (unread) ...[
+                                                      Container(
+                                                        width: 8,
+                                                        height: 8,
+                                                        decoration: const BoxDecoration(
+                                                          color: Color(0xFF24A889),
+                                                          shape: BoxShape.circle,
+                                                        ),
+                                                      ),
+                                                      const SizedBox(width: 6),
+                                                    ],
+                                                    const Icon(
+                                                      Icons.schedule_rounded,
+                                                      size: 12,
+                                                      color: Color(0xFF777D8E),
+                                                    ),
                                                   const SizedBox(width: 3),
                                                   Text(
                                                     AppFormatters.formatRelativeTime(t.updatedAt),

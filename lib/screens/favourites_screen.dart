@@ -177,17 +177,37 @@ class _FavouritesScreenState extends State<FavouritesScreen> {
                       index: i,
                       child: _FavouriteItemCard(
                         listing: item,
-                        onTap: () => ListingDetailSheet.show(context, item),
+                        onTap: () {
+                          if (item.isDeleted) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(
+                                content: Text(
+                                  'This item was removed by the seller and is no longer available.',
+                                ),
+                              ),
+                            );
+                            return;
+                          }
+                          ListingDetailSheet.show(context, item);
+                        },
                         onRemove: () async {
-                          await listingProvider.toggleFavorite(item);
+                          final ok = await listingProvider.toggleFavorite(item);
                           if (!context.mounted) return;
                           ScaffoldMessenger.of(context).showSnackBar(
                             SnackBar(
-                              content: Text('Removed "${item.title}" from favourites'),
-                              action: SnackBarAction(
-                                label: 'Undo',
-                                onPressed: () => listingProvider.toggleFavorite(item),
+                              content: Text(
+                                ok
+                                    ? 'Removed "${item.title}" from favourites'
+                                    : (listingProvider.error ??
+                                        'Could not update favourites right now'),
                               ),
+                              action: ok
+                                  ? SnackBarAction(
+                                      label: 'Undo',
+                                      onPressed: () =>
+                                          listingProvider.toggleFavorite(item),
+                                    )
+                                  : null,
                             ),
                           );
                         },
@@ -240,15 +260,15 @@ class _FavouriteItemCard extends StatelessWidget {
           children: [
             ClipRRect(
               borderRadius: BorderRadius.circular(16),
-              child: Container(
+              child: SizedBox(
                 width: 80,
                 height: 80,
-                color: const Color(0xFF667B72).withValues(alpha: 0.15),
                 child: SmartListingImage(
                   imageUrl: listing.imageUrl,
                   fit: BoxFit.cover,
-                  fallback: const Center(
-                    child: Icon(Icons.category_rounded, size: 36, color: Color(0xFF667B72)),
+                  fallback: ListingCategoryArtwork.fallback(
+                    listing.category,
+                    iconSize: 34,
                   ),
                 ),
               ),
@@ -271,7 +291,8 @@ class _FavouriteItemCard extends StatelessWidget {
                           ),
                         ),
                       ),
-                      _statusBadge(listing.status),
+                      const SizedBox(width: 6),
+                      _statusBadge(listing),
                     ],
                   ),
                   const SizedBox(height: 4),
@@ -302,7 +323,9 @@ class _FavouriteItemCard extends StatelessWidget {
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
                       Text(
-                        AppFormatters.formatBDT(listing.price),
+                        listing.isDeleted
+                            ? 'Unavailable'
+                            : AppFormatters.formatBDT(listing.price),
                         style: AppTypography.price(
                           size: 18,
                           color: isDark ? Colors.white : const Color(0xFF252832),
@@ -325,12 +348,20 @@ class _FavouriteItemCard extends StatelessWidget {
     );
   }
 
-  Widget _statusBadge(String status) {
-    final color = status == 'available'
+  Widget _statusBadge(Listing item) {
+    final bool unavailable = item.isNoLongerAvailable;
+    final Color color = item.status == 'available'
         ? const Color(0xFF24A889)
-        : status == 'reserved'
+        : item.status == 'reserved'
             ? const Color(0xFFF2A14A)
-            : const Color(0xFF777D8E);
+            : (unavailable ? const Color(0xFFD94B64) : const Color(0xFF777D8E));
+    final String label = item.isDeleted
+        ? 'No longer available'
+        : item.isSold
+            ? 'Sold · No longer available'
+            : item.status == 'suspended'
+                ? 'Suspended'
+                : (item.status[0].toUpperCase() + item.status.substring(1));
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
       decoration: BoxDecoration(
@@ -343,10 +374,10 @@ class _FavouriteItemCard extends StatelessWidget {
           PulsingStatusDot(color: color, size: 6),
           const SizedBox(width: 5),
           Text(
-            status[0].toUpperCase() + status.substring(1),
+            label,
             style: TextStyle(
               color: color,
-              fontSize: 11,
+              fontSize: 10.5,
               fontWeight: FontWeight.w800,
             ),
           ),

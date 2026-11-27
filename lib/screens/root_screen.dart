@@ -1,4 +1,3 @@
-import 'package:firebase_auth/firebase_auth.dart' hide AuthProvider;
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -39,179 +38,256 @@ class _RootScreenState extends State<RootScreen> {
     }
   }
 
+  void _openMessages(BuildContext context, bool isGuest) {
+    if (isGuest) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: const Text('Sign in to view your direct messages'),
+          action: SnackBarAction(
+            label: 'Sign in',
+            onPressed: () => context.read<AuthProvider>().exitGuestMode(),
+          ),
+        ),
+      );
+      return;
+    }
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => Scaffold(
+          appBar: AppBar(
+            title: Text('Messages', style: AppTypography.display(size: 20)),
+          ),
+          body: const MessagesScreen(),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
+    final auth = context.watch<AuthProvider>();
     final offers = context.watch<OfferProvider>();
     final chat = context.watch<ChatProvider>();
-    final pendingOffersCount = offers.received.where((o) => o.status == 'pending').length;
+    final currentUser = auth.user;
+    final isGuest = currentUser == null;
+    final pendingOffersCount =
+        offers.received.where((o) => o.isActiveOffer).length;
     final unreadNotifications = offers.unreadNotificationCount;
-    final isGuest = FirebaseAuth.instance.currentUser == null;
+    final unreadMessages = chat.unreadThreadsCount;
     final isDesktop = MediaQuery.sizeOf(context).width >= 840;
 
     final pages = [
       const BrowseScreen(),
-      isGuest ? const _GuestAuthPrompt(feature: 'view messages') : const MessagesScreen(),
-      isGuest ? const _GuestAuthPrompt(feature: 'sell items') : const SellScreen(),
-      isGuest ? const _GuestAuthPrompt(feature: 'manage offers') : const OffersScreen(),
-      isGuest ? const _GuestAuthPrompt(feature: 'view your profile') : const ProfileScreen(),
+      isGuest
+          ? const _GuestAuthPrompt(feature: 'sell items')
+          : const SellScreen(),
+      isGuest
+          ? const _GuestAuthPrompt(feature: 'manage offers')
+          : const OffersScreen(),
+      isGuest
+          ? const _GuestAuthPrompt(feature: 'view your profile')
+          : const ProfileScreen(),
     ];
 
     return Scaffold(
-      backgroundColor: isDark ? const Color(0xFF13151A) : const Color(0xFFF6F5F1),
-      appBar: isDesktop
-          ? PreferredSize(
-              preferredSize: const Size.fromHeight(64),
-              child: Container(
-                height: 64,
-                padding: const EdgeInsets.symmetric(horizontal: 24),
-                decoration: BoxDecoration(
-                  color: isDark ? const Color(0xFF181B22) : Colors.white,
-                  border: Border(
-                    bottom: BorderSide(
-                      color: isDark ? const Color(0xFF2A2F3D) : const Color(0xFFE7E4DC),
-                    ),
-                  ),
-                ),
-                child: Center(
-                  child: ConstrainedBox(
-                    constraints: const BoxConstraints(maxWidth: 1120),
-                    child: Row(
-                      children: [
-                        InkWell(
-                          onTap: () => setState(() => index = 0),
-                          borderRadius: BorderRadius.circular(12),
-                          child: Row(
-                            children: [
-                              Container(
-                                width: 36,
-                                height: 36,
-                                decoration: BoxDecoration(
-                                  gradient: const LinearGradient(
-                                    colors: [Color(0xFF252832), Color(0xFF667B72)],
-                                  ),
-                                  borderRadius: BorderRadius.circular(11),
-                                ),
-                                child: const Icon(
-                                  Icons.swap_horiz_rounded,
-                                  color: Colors.white,
-                                  size: 20,
-                                ),
-                              ),
-                              const SizedBox(width: 10),
-                              Text(
-                                'PassItOn',
-                                style: AppTypography.brand(
-                                  size: 21,
-                                  color: isDark ? Colors.white : const Color(0xFF252832),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                        const SizedBox(width: 28),
-                        _desktopNavTab(
-                          'Explore',
-                          0,
-                          isDark,
-                          icon: Icons.explore_outlined,
-                          activeIcon: Icons.explore_rounded,
-                        ),
-                        _desktopNavTab(
-                          'Messages',
-                          1,
-                          isDark,
-                          icon: Icons.forum_outlined,
-                          activeIcon: Icons.forum_rounded,
-                          badge: chat.threads.length,
-                        ),
-                        _desktopNavTab(
-                          'Offers',
-                          3,
-                          isDark,
-                          icon: Icons.handshake_outlined,
-                          activeIcon: Icons.handshake_rounded,
-                          badge: pendingOffersCount,
-                        ),
-                        _desktopNavTab(
-                          'Profile',
-                          4,
-                          isDark,
-                          icon: Icons.person_outline_rounded,
-                          activeIcon: Icons.person_rounded,
-                          leadingOverride: !isGuest
-                              ? UserAvatar(
-                                  uid: FirebaseAuth.instance.currentUser?.uid,
-                                  name: FirebaseAuth
-                                          .instance.currentUser?.displayName ??
-                                      'Me',
-                                  radius: 10,
-                                  showBorder: index == 4,
-                                  borderColor: const Color(0xFF667B72),
-                                )
-                              : null,
-                        ),
-                        const Spacer(),
-                        if (!isGuest) ...[
-                          IconButton(
-                            tooltip: 'Notifications',
-                            onPressed: () => showModalBottomSheet(
-                              context: context,
-                              isScrollControlled: true,
-                              backgroundColor: Colors.transparent,
-                              builder: (_) => const NotificationsSheet(),
-                            ),
-                            icon: Badge(
-                              isLabelVisible: unreadNotifications > 0,
-                              label: Text('$unreadNotifications'),
-                              child: unreadNotifications > 0
-                                  ? const RingingBellIcon(
-                                      isRinging: true,
-                                      color: Color(0xFFC69C55),
-                                      size: 21,
-                                    )
-                                  : const Icon(Icons.notifications_none_rounded, size: 22),
-                            ),
-                          ),
-                          const SizedBox(width: 10),
-                          FilledButton.icon(
-                            onPressed: () => setState(() => index = 2),
-                            icon: const Icon(Icons.add_business_rounded, size: 18),
-                            label: const Text(
-                              'My Shop / Sell',
-                              style: TextStyle(fontWeight: FontWeight.w700),
-                            ),
-                            style: FilledButton.styleFrom(
-                              backgroundColor: index == 2
-                                  ? const Color(0xFF667B72)
-                                  : const Color(0xFF252832),
-                              foregroundColor: Colors.white,
-                              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(12),
-                              ),
-                            ),
-                          ),
-                        ] else
-                          FilledButton.icon(
-                            onPressed: () => context.read<AuthProvider>().exitGuestMode(),
-                            icon: const Icon(Icons.login_rounded, size: 17),
-                            label: const Text('Sign In'),
-                            style: FilledButton.styleFrom(
-                              backgroundColor: const Color(0xFF252832),
-                              foregroundColor: Colors.white,
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(12),
-                              ),
-                            ),
-                          ),
-                      ],
-                    ),
-                  ),
-                ),
+      backgroundColor:
+          isDark ? const Color(0xFF13151A) : const Color(0xFFF6F5F1),
+      appBar: PreferredSize(
+        preferredSize: Size.fromHeight(isDesktop ? 64 : 58),
+        child: Container(
+          height: isDesktop ? 64 : 58,
+          padding: EdgeInsets.symmetric(horizontal: isDesktop ? 24 : 16),
+          decoration: BoxDecoration(
+            color: isDark ? const Color(0xFF181B22) : Colors.white,
+            border: Border(
+              bottom: BorderSide(
+                color: isDark
+                    ? const Color(0xFF2A2F3D)
+                    : const Color(0xFFE7E4DC),
               ),
-            )
-          : null,
+            ),
+          ),
+          child: Center(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 1120),
+              child: Row(
+                children: [
+                  Flexible(
+                    child: InkWell(
+                      onTap: () => setState(() => index = 0),
+                      borderRadius: BorderRadius.circular(12),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Container(
+                            width: 34,
+                            height: 34,
+                            decoration: BoxDecoration(
+                              gradient: const LinearGradient(
+                                colors: [Color(0xFF252832), Color(0xFF667B72)],
+                              ),
+                              borderRadius: BorderRadius.circular(10),
+                            ),
+                            child: const Icon(
+                              Icons.swap_horiz_rounded,
+                              color: Colors.white,
+                              size: 19,
+                            ),
+                          ),
+                          const SizedBox(width: 9),
+                          Flexible(
+                            child: Text(
+                              'PassItOn',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: AppTypography.brand(
+                                size: isDesktop ? 21 : 19,
+                                color: isDark
+                                    ? Colors.white
+                                    : const Color(0xFF252832),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  if (isDesktop) ...[
+                    const SizedBox(width: 24),
+                    _desktopNavTab(
+                      'Explore',
+                      0,
+                      isDark,
+                      icon: Icons.explore_outlined,
+                      activeIcon: Icons.explore_rounded,
+                    ),
+                    _desktopNavTab(
+                      'Sell',
+                      1,
+                      isDark,
+                      icon: Icons.storefront_outlined,
+                      activeIcon: Icons.storefront_rounded,
+                    ),
+                    _desktopNavTab(
+                      'Offers',
+                      2,
+                      isDark,
+                      icon: Icons.handshake_outlined,
+                      activeIcon: Icons.handshake_rounded,
+                      badge: pendingOffersCount,
+                    ),
+                    _desktopNavTab(
+                      'Profile',
+                      3,
+                      isDark,
+                      icon: Icons.person_outline_rounded,
+                      activeIcon: Icons.person_rounded,
+                      leadingOverride: !isGuest
+                          ? UserAvatar(
+                              uid: currentUser.uid,
+                              name: auth.currentProfileData['name'] as String? ??
+                                  currentUser.displayName ??
+                                  'Me',
+                              radius: 10,
+                              showBorder: index == 3,
+                              borderColor: const Color(0xFF667B72),
+                            )
+                          : null,
+                    ),
+                  ],
+                  const Spacer(),
+                  if (!isGuest) ...[
+                    IconButton(
+                      tooltip: 'Messages',
+                      onPressed: () => _openMessages(context, isGuest),
+                      icon: Badge(
+                        isLabelVisible: unreadMessages > 0,
+                        backgroundColor: const Color(0xFFD94B64),
+                        label: Text('$unreadMessages'),
+                        child: const Icon(Icons.forum_outlined, size: 22),
+                      ),
+                    ),
+                    IconButton(
+                      tooltip: 'Notifications',
+                      onPressed: () => showModalBottomSheet(
+                        context: context,
+                        isScrollControlled: true,
+                        backgroundColor: Colors.transparent,
+                        builder: (_) => const NotificationsSheet(),
+                      ),
+                      icon: Badge(
+                        isLabelVisible: unreadNotifications > 0,
+                        label: Text('$unreadNotifications'),
+                        child: unreadNotifications > 0
+                            ? const RingingBellIcon(
+                                isRinging: true,
+                                color: Color(0xFFC69C55),
+                                size: 21,
+                              )
+                            : const Icon(
+                                Icons.notifications_none_rounded,
+                                size: 22,
+                              ),
+                      ),
+                    ),
+                    if (isDesktop) ...[
+                      const SizedBox(width: 8),
+                      FilledButton.icon(
+                        onPressed: () => setState(() => index = 1),
+                        icon: const Icon(Icons.add_business_rounded, size: 18),
+                        label: const Text(
+                          'Post Item',
+                          style: TextStyle(fontWeight: FontWeight.w700),
+                        ),
+                        style: FilledButton.styleFrom(
+                          backgroundColor: index == 1
+                              ? const Color(0xFF667B72)
+                              : const Color(0xFF252832),
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 16,
+                            vertical: 12,
+                          ),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ] else ...[
+                    IconButton(
+                      tooltip: 'Messages',
+                      onPressed: () => _openMessages(context, isGuest),
+                      icon: const Icon(Icons.forum_outlined, size: 21),
+                    ),
+                    const SizedBox(width: 4),
+                    FilledButton.icon(
+                      onPressed: () =>
+                          context.read<AuthProvider>().exitGuestMode(),
+                      icon: const Icon(Icons.login_rounded, size: 17),
+                      label: const Text('Sign In'),
+                      style: FilledButton.styleFrom(
+                        backgroundColor: const Color(0xFF252832),
+                        foregroundColor: Colors.white,
+                        padding: EdgeInsets.symmetric(
+                          horizontal: isDesktop ? 16 : 12,
+                          vertical: 10,
+                        ),
+                        visualDensity: VisualDensity.compact,
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
       body: IndexedStack(index: index, children: pages),
       bottomNavigationBar: isDesktop
           ? null
@@ -220,7 +296,9 @@ class _RootScreenState extends State<RootScreen> {
                 color: isDark ? const Color(0xFF181B22) : Colors.white,
                 border: Border(
                   top: BorderSide(
-                    color: isDark ? const Color(0xFF2A2F3D) : const Color(0xFFE7E4DC),
+                    color: isDark
+                        ? const Color(0xFF2A2F3D)
+                        : const Color(0xFFE7E4DC),
                   ),
                 ),
               ),
@@ -228,36 +306,28 @@ class _RootScreenState extends State<RootScreen> {
                 height: 66,
                 elevation: 0,
                 selectedIndex: index,
-                onDestinationSelected: (value) => setState(() => index = value),
-                backgroundColor: isDark ? const Color(0xFF181B22) : Colors.white,
-                indicatorColor: const Color(0xFF667B72).withValues(alpha: 0.14),
+                onDestinationSelected: (value) =>
+                    setState(() => index = value),
+                backgroundColor:
+                    isDark ? const Color(0xFF181B22) : Colors.white,
+                indicatorColor:
+                    const Color(0xFF667B72).withValues(alpha: 0.14),
                 destinations: [
                   NavigationDestination(
-                    icon: _navIcon(Icons.explore_outlined, Icons.explore_rounded, index == 0, isDark),
+                    icon: _navIcon(
+                      Icons.explore_outlined,
+                      Icons.explore_rounded,
+                      index == 0,
+                      isDark,
+                    ),
                     label: 'Explore',
                   ),
                   NavigationDestination(
                     icon: _navIcon(
-                      Icons.forum_outlined,
-                      Icons.forum_rounded,
+                      Icons.add_business_outlined,
+                      Icons.add_business_rounded,
                       index == 1,
                       isDark,
-                      badge: chat.threads.length,
-                    ),
-                    label: 'Messages',
-                  ),
-                  NavigationDestination(
-                    icon: Container(
-                      padding: const EdgeInsets.all(8),
-                      decoration: BoxDecoration(
-                        gradient: LinearGradient(
-                          colors: index == 2
-                              ? const [Color(0xFF667B72), Color(0xFF4F645B)]
-                              : const [Color(0xFF252832), Color(0xFF3E4454)],
-                        ),
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      child: const Icon(Icons.add_business_rounded, color: Colors.white, size: 20),
                     ),
                     label: 'Sell',
                   ),
@@ -265,7 +335,7 @@ class _RootScreenState extends State<RootScreen> {
                     icon: _navIcon(
                       Icons.handshake_outlined,
                       Icons.handshake_rounded,
-                      index == 3,
+                      index == 2,
                       isDark,
                       badge: pendingOffersCount,
                     ),
@@ -274,18 +344,18 @@ class _RootScreenState extends State<RootScreen> {
                   NavigationDestination(
                     icon: !isGuest
                         ? UserAvatar(
-                            uid: FirebaseAuth.instance.currentUser?.uid,
-                            name: FirebaseAuth
-                                    .instance.currentUser?.displayName ??
+                            uid: currentUser.uid,
+                            name: auth.currentProfileData['name'] as String? ??
+                                currentUser.displayName ??
                                 'Me',
                             radius: 12,
-                            showBorder: index == 4,
+                            showBorder: index == 3,
                             borderColor: const Color(0xFF667B72),
                           )
                         : _navIcon(
                             Icons.person_outline_rounded,
                             Icons.person_rounded,
-                            index == 4,
+                            index == 3,
                             isDark,
                           ),
                     label: 'Profile',
@@ -319,7 +389,8 @@ class _RootScreenState extends State<RootScreen> {
               ? (isDark ? const Color(0xFF252A36) : const Color(0xFFF2F0EA))
               : Colors.transparent,
           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(11)),
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(11)),
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
@@ -341,7 +412,8 @@ class _RootScreenState extends State<RootScreen> {
             if (badge > 0) ...[
               const SizedBox(width: 6),
               Container(
-                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
                 decoration: BoxDecoration(
                   color: const Color(0xFFD94B64),
                   borderRadius: BorderRadius.circular(99),
@@ -405,32 +477,45 @@ class _GuestAuthPrompt extends StatelessWidget {
                   color: const Color(0xFF667B72).withValues(alpha: 0.14),
                   shape: BoxShape.circle,
                 ),
-                child: const Icon(Icons.lock_outline_rounded, size: 34, color: Color(0xFF667B72)),
+                child: const Icon(
+                  Icons.lock_outline_rounded,
+                  size: 34,
+                  color: Color(0xFF667B72),
+                ),
               ),
               const SizedBox(height: 18),
               Text(
                 'Sign in to $feature',
                 textAlign: TextAlign.center,
-                style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w800),
+                style:
+                    const TextStyle(fontSize: 20, fontWeight: FontWeight.w800),
               ),
               const SizedBox(height: 8),
               Text(
                 'Create a free account or sign in to connect with buyers and sellers on PassItOn.',
                 textAlign: TextAlign.center,
                 style: TextStyle(
-                  color: isDark ? Colors.grey.shade400 : const Color(0xFF777D8E),
+                  color:
+                      isDark ? Colors.grey.shade400 : const Color(0xFF777D8E),
                 ),
               ),
               const SizedBox(height: 22),
               FilledButton(
-                onPressed: () => context.read<AuthProvider>().exitGuestMode(),
+                onPressed: () =>
+                    context.read<AuthProvider>().exitGuestMode(),
                 style: FilledButton.styleFrom(
                   backgroundColor: const Color(0xFF252832),
                   foregroundColor: Colors.white,
-                  padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 14),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 28, vertical: 14),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(14),
+                  ),
                 ),
-                child: const Text('Sign In / Create Account', style: TextStyle(fontWeight: FontWeight.w700)),
+                child: const Text(
+                  'Sign In / Create Account',
+                  style: TextStyle(fontWeight: FontWeight.w700),
+                ),
               ),
             ],
           ),

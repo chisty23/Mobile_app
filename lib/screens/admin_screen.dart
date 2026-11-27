@@ -1,4 +1,3 @@
-import 'package:firebase_auth/firebase_auth.dart' hide AuthProvider;
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -86,8 +85,8 @@ class _AdminScreenState extends State<AdminScreen>
     _syncFeeInputs(admin.feeSettings);
 
     final themeProvider = context.watch<ThemeProvider>();
-    final currentUser = FirebaseAuth.instance.currentUser;
-    final isExplicitAdmin = currentUser != null && admin.isCurrentUserAdmin;
+    final auth = context.watch<AuthProvider>();
+    final isExplicitAdmin = auth.isSignedIn && admin.isCurrentUserAdmin;
 
     if (!isExplicitAdmin) {
       return Scaffold(
@@ -111,7 +110,7 @@ class _AdminScreenState extends State<AdminScreen>
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  'Your current account (${currentUser?.email ?? 'Guest'}) is a student/customer account. Please sign in via the Administrator Portal to manage platform fees and governance.',
+                  'Your current account (${auth.user?.email ?? 'Guest'}) is a student/customer account. Please sign in via the Administrator Portal to manage platform fees and governance.',
                   textAlign: TextAlign.center,
                   style: TextStyle(
                     color: isDark ? Colors.grey.shade400 : const Color(0xFF777D8E),
@@ -307,7 +306,7 @@ class _AdminScreenState extends State<AdminScreen>
                           children: [
                             Expanded(
                               child: Text(
-                                currentUser.email ?? 'Admin',
+                                auth.user?.email ?? 'Admin',
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
                                 style: TextStyle(
@@ -1947,7 +1946,7 @@ class _AdminScreenState extends State<AdminScreen>
                         u['role'] == 'admin' || (u['isAdmin'] as bool? ?? false);
                     final isBanned = u['isBanned'] == true;
                     final isVerified = u['verifiedStudent'] == true;
-                    final isSelf = uid == FirebaseAuth.instance.currentUser?.uid;
+                    final isSelf = uid == context.read<AuthProvider>().uid;
 
                     return Container(
                       padding: const EdgeInsets.all(14),
