@@ -9,33 +9,8 @@ service cloud.firestore {
       return signedIn() && request.auth.uid == userId;
     }
 
-    function userExists(uid) {
-      return exists(/databases/$(database)/documents/users/$(uid));
-    }
-
-    function userDoc(uid) {
-      return get(/databases/$(database)/documents/users/$(uid)).data;
-    }
-
-    function isAdmin() {
-      return signedIn()
-        && userExists(request.auth.uid)
-        && (
-          userDoc(request.auth.uid).get('role', 'customer') == 'admin'
-          || userDoc(request.auth.uid).get('isAdmin', false) == true
-        );
-    }
-
-    function isNotBanned() {
-      return signedIn() && (
-        !userExists(request.auth.uid)
-        || userDoc(request.auth.uid).get('isBanned', false) != true
-      );
-    }
-
-    function unchanged(field) {
-      return !(field in request.resource.data)
-        || ((field in resource.data) && request.resource.data[field] == resource.data[field]);
+    function userPath(uid) {
+      return /databases/$(database)/documents/users/$(uid);
     }
 
     function listingPath(listingId) {
@@ -50,8 +25,28 @@ service cloud.firestore {
       return /databases/$(database)/documents/ratings/$(listingId);
     }
 
-    function userPath(uid) {
-      return /databases/$(database)/documents/users/$(uid);
+    function actorStateFromDoc(u) {
+      return (u.get('role', 'customer') == 'admin' || u.get('isAdmin', false) == true)
+        ? 2
+        : (u.get('isBanned', false) == true ? 0 : 1);
+    }
+
+    function actorState() {
+      let p = userPath(request.auth.uid);
+      return !exists(p) ? 1 : actorStateFromDoc(get(p).data);
+    }
+
+    function isAdmin() {
+      return signedIn() && actorState() == 2;
+    }
+
+    function isNotBanned() {
+      return signedIn() && actorState() != 0;
+    }
+
+    function unchanged(field) {
+      return !(field in request.resource.data)
+        || ((field in resource.data) && request.resource.data[field] == resource.data[field]);
     }
 
     function chatExists(threadId) {
@@ -82,13 +77,6 @@ service cloud.firestore {
           == resource.data.get('ratingSum', 0) + getAfter(ratingPath(ratingId)).data.stars;
     }
 
-    function isValidRatingUserStatsUpdate(userId) {
-      return isValidRatingUserStatsWithId(
-        userId,
-        request.resource.data.get('lastRatingId', '')
-      );
-    }
-
     function isValidCompletionUserStatsWithOffer(userId, completedOfferId) {
       return completedOfferId is string
         && completedOfferId.size() > 0
@@ -109,19 +97,12 @@ service cloud.firestore {
             + (userId == get(offerPath(completedOfferId)).data.buyerId ? 1 : 0);
     }
 
-    function isValidCompletionUserStatsUpdate(userId) {
-      return isValidCompletionUserStatsWithOffer(
-        userId,
-        request.resource.data.get('lastCompletedOfferId', '')
-      );
-    }
-
     function statsMatchUserDoc(userId) {
-      return userExists(userId)
-        && request.resource.data.get('soldCount', 0) == userDoc(userId).get('soldCount', 0)
-        && request.resource.data.get('boughtCount', 0) == userDoc(userId).get('boughtCount', 0)
-        && request.resource.data.get('ratingSum', 0) == userDoc(userId).get('ratingSum', 0)
-        && request.resource.data.get('ratingCount', 0) == userDoc(userId).get('ratingCount', 0);
+      return exists(userPath(userId))
+        && request.resource.data.get('soldCount', 0) == get(userPath(userId)).data.get('soldCount', 0)
+        && request.resource.data.get('boughtCount', 0) == get(userPath(userId)).data.get('boughtCount', 0)
+        && request.resource.data.get('ratingSum', 0) == get(userPath(userId)).data.get('ratingSum', 0)
+        && request.resource.data.get('ratingCount', 0) == get(userPath(userId)).data.get('ratingCount', 0);
     }
 
     function statsMatchAfterUserDoc(userId) {
@@ -133,6 +114,247 @@ service cloud.firestore {
         && request.resource.data.get('ratingCount', 0) == getAfter(userPath(userId)).data.get('ratingCount', 0);
     }
 
+    function listingOfferPath(listingId, buyerUid) {
+      return offerPath(listingId + '_' + buyerUid);
+    }
+
+    function canSellerReserveForBuyer(offerP) {
+      return exists(offerP)
+        && get(offerP).data.status == 'pending'
+        && getAfter(offerP).data.status == 'accepted';
+    }
+
+    function canSellerReleaseBuyerOffer(offerP) {
+      return !exists(offerP)
+        || get(offerP).data.status != 'accepted'
+        || getAfter(offerP).data.status == 'declined';
+    }
+
+    function canSellerCompleteBuyerOffer(offerP) {
+      return exists(offerP)
+        && get(offerP).data.status == 'accepted'
+        && getAfter(offerP).data.status == 'completed';
+    }
+
+    function canSellerTransitionListing(listingId, oldData, newData, changed) {
+      let nextStatus = newData.status;
+      let prevStatus = oldData.status;
+      let prevBuyer = oldData.get('reservedFor', '');
+      return (nextStatus == 'reserved'
+          && prevStatus == 'available'
+          && changed.hasOnly(['status', 'reservedFor', 'updatedAt'])
+          && (newData.reservedFor == ''
+            || (newData.reservedFor is string
+              && newData.reservedFor.size() > 0
+              && canSellerReserveForBuyer(listingOfferPath(listingId, newData.reservedFor)))))
+        || (nextStatus == 'available'
+          && prevStatus == 'reserved'
+          && newData.reservedFor == ''
+          && changed.hasOnly(['status', 'reservedFor', 'updatedAt'])
+          && (prevBuyer == ''
+            || canSellerReleaseBuyerOffer(listingOfferPath(listingId, prevBuyer))))
+        || (nextStatus == 'sold'
+          && prevStatus in ['available', 'reserved']
+          && ((prevBuyer == ''
+              && newData.reservedFor == ''
+              && changed.hasOnly(['status', 'reservedFor', 'updatedAt']))
+            || (prevStatus == 'reserved'
+              && prevBuyer != ''
+              && newData.reservedFor == prevBuyer
+              && changed.hasOnly(['status', 'reservedFor', 'statsCounted', 'updatedAt'])
+              && canSellerCompleteBuyerOffer(listingOfferPath(listingId, prevBuyer))
+              && (!('statsCounted' in changed)
+                || (oldData.get('statsCounted', false) == false
+                  && newData.statsCounted == true)))));
+    }
+
+    function canSellerUpdateListing(listingId, oldData, newData, changed) {
+      return changed.hasOnly(['sellerName', 'sellerPhotoUrl'])
+        || (oldData.status in ['available', 'reserved']
+          && changed.hasOnly([
+            'title', 'keywords', 'description', 'category', 'condition',
+            'location', 'price', 'negotiable', 'imageUrl', 'images', 'updatedAt'
+          ])
+          && newData.title is string
+          && newData.title.size() >= 3
+          && newData.price is int
+          && newData.price > 0)
+        || canSellerTransitionListing(listingId, oldData, newData, changed);
+    }
+
+    function canBuyerUpdateListing(listingId, oldData, newData, changed) {
+      let offerP = listingOfferPath(listingId, request.auth.uid);
+      return changed.hasOnly(['status', 'reservedFor', 'updatedAt'])
+        && exists(offerP)
+        && ((oldData.status == 'available'
+            && newData.status == 'reserved'
+            && newData.reservedFor == request.auth.uid
+            && get(offerP).data.status == 'countered'
+            && getAfter(offerP).data.status == 'accepted')
+          || (oldData.status == 'reserved'
+            && oldData.reservedFor == request.auth.uid
+            && newData.status == 'available'
+            && newData.reservedFor == ''
+            && get(offerP).data.status == 'accepted'
+            && getAfter(offerP).data.status == 'withdrawn'));
+    }
+
+    function canActiveUserUpdateListing(listingId) {
+      let oldData = resource.data;
+      let newData = request.resource.data;
+      let changed = newData.diff(oldData).affectedKeys();
+      return oldData.sellerId == request.auth.uid
+        ? canSellerUpdateListing(listingId, oldData, newData, changed)
+        : canBuyerUpdateListing(listingId, oldData, newData, changed);
+    }
+
+    function canUpdateListing(listingId) {
+      let role = actorState();
+      return role == 2 || (role == 1 && canActiveUserUpdateListing(listingId));
+    }
+
+    function listingWasReservedForBuyer(lPath, buyerUid) {
+      return get(lPath).data.status == 'available'
+        && getAfter(lPath).data.status == 'reserved'
+        && getAfter(lPath).data.reservedFor == buyerUid;
+    }
+
+    function listingReleasedToAvailable(lPath) {
+      return getAfter(lPath).data.status == 'available'
+        && getAfter(lPath).data.get('reservedFor', '') == '';
+    }
+
+    function canSellerUpdateOffer(oldData, newData, changed, lPath) {
+      let nextStatus = newData.status;
+      let prevStatus = oldData.status;
+      return newData.updatedAt == request.time && (
+        (nextStatus == 'countered'
+          && prevStatus in ['pending', 'countered']
+          && (prevStatus == 'pending'
+            || (oldData.get('lastUpdatedBy', '') != ''
+              && oldData.get('lastUpdatedBy', '') != request.auth.uid))
+          && offerNotExpired(oldData)
+          && newData.lastUpdatedBy == request.auth.uid
+          && newData.amount is int
+          && newData.amount > 0
+          && changed.hasOnly(['amount', 'status', 'lastUpdatedBy', 'history', 'updatedAt'])
+          && get(lPath).data.status == 'available')
+        || (nextStatus == 'accepted'
+          && prevStatus == 'pending'
+          && offerNotExpired(oldData)
+          && newData.get('handoverCode', '') is string
+          && newData.get('handoverCode', '').size() >= 4
+          && changed.hasOnly(['status', 'handoverCode', 'updatedAt'])
+          && listingWasReservedForBuyer(lPath, oldData.buyerId))
+        || (nextStatus == 'declined'
+          && changed.hasOnly(['status', 'updatedAt'])
+          && ((prevStatus in ['pending', 'countered']
+              && (offerNotExpired(oldData)
+                || get(lPath).data.status in ['reserved', 'sold']
+                || getAfter(lPath).data.status in ['reserved', 'sold']))
+            || (prevStatus == 'accepted'
+              && listingReleasedToAvailable(lPath))))
+        || (nextStatus == 'completed'
+          && prevStatus == 'accepted'
+          && changed.hasOnly(['status', 'updatedAt'])
+          && getAfter(lPath).data.status == 'sold')
+        || (nextStatus == 'expired'
+          && prevStatus in ['pending', 'countered']
+          && offerIsExpired(oldData)
+          && changed.hasOnly(['status', 'updatedAt']))
+      );
+    }
+
+    function canBuyerUpdateOffer(oldData, newData, changed, lPath) {
+      let nextStatus = newData.status;
+      let prevStatus = oldData.status;
+      let uid = request.auth.uid;
+      return (nextStatus == 'pending'
+          && newData.lastUpdatedBy == uid
+          && newData.amount is int
+          && newData.amount > 0
+          && newData.updatedAt == request.time
+          && get(lPath).data.status == 'available'
+          && ((prevStatus == 'pending'
+              && offerNotExpired(oldData)
+              && changed.hasOnly([
+                'amount', 'message', 'listingTitle', 'sellerName',
+                'sellerPhotoUrl', 'buyerName', 'buyerPhotoUrl',
+                'lastUpdatedBy', 'history', 'feePaid', 'feeTransactionId',
+                'updatedAt'
+              ]))
+            || (prevStatus in ['declined', 'withdrawn']
+              && newData.get('isRated', false) == false
+              && newData.createdAt == request.time
+              && changed.hasOnly([
+                'amount', 'message', 'status', 'listingTitle', 'sellerName',
+                'sellerPhotoUrl', 'buyerName', 'buyerPhotoUrl', 'lastUpdatedBy',
+                'history', 'isRated', 'feePaid', 'feeTransactionId',
+                'createdAt', 'updatedAt'
+              ]))))
+        || (nextStatus == 'accepted'
+          && prevStatus == 'countered'
+          && oldData.get('lastUpdatedBy', '') == oldData.sellerId
+          && offerNotExpired(oldData)
+          && newData.get('handoverCode', '') is string
+          && newData.get('handoverCode', '').size() >= 4
+          && newData.updatedAt == request.time
+          && changed.hasOnly(['status', 'handoverCode', 'updatedAt'])
+          && listingWasReservedForBuyer(lPath, uid))
+        || (nextStatus == 'declined'
+          && newData.updatedAt == request.time
+          && changed.hasOnly(['status', 'updatedAt'])
+          && ((prevStatus == 'countered' && offerNotExpired(oldData))
+            || (prevStatus in ['pending', 'countered']
+              && get(lPath).data.status in ['reserved', 'sold']
+              && oldData.buyerId != get(lPath).data.get('reservedFor', ''))))
+        || (nextStatus == 'withdrawn'
+          && newData.updatedAt == request.time
+          && changed.hasOnly(['status', 'updatedAt'])
+          && ((prevStatus in ['pending', 'countered'] && offerNotExpired(oldData))
+            || (prevStatus == 'accepted' && listingReleasedToAvailable(lPath))))
+        || (nextStatus == 'expired'
+          && prevStatus in ['pending', 'countered']
+          && offerIsExpired(oldData)
+          && newData.updatedAt == request.time
+          && changed.hasOnly(['status', 'updatedAt']))
+        || (prevStatus == 'completed'
+          && nextStatus == 'completed'
+          && oldData.get('isRated', false) == false
+          && newData.isRated == true
+          && changed.hasOnly(['isRated'])
+          && existsAfter(ratingPath(oldData.listingId)));
+    }
+
+    function canWinningBuyerDeclineCompeting(oldData, newData, changed, lPath) {
+      let uid = request.auth.uid;
+      return oldData.status in ['pending', 'countered']
+        && newData.status == 'declined'
+        && newData.updatedAt == request.time
+        && changed.hasOnly(['status', 'updatedAt'])
+        && (listingWasReservedForBuyer(lPath, uid)
+          || (get(lPath).data.status in ['reserved', 'sold']
+            && get(lPath).data.get('reservedFor', '') == uid));
+    }
+
+    function canActiveUserUpdateOffer() {
+      let oldData = resource.data;
+      let newData = request.resource.data;
+      let changed = newData.diff(oldData).affectedKeys();
+      let lPath = listingPath(oldData.listingId);
+      let uid = request.auth.uid;
+      return oldData.sellerId == uid
+        ? canSellerUpdateOffer(oldData, newData, changed, lPath)
+        : (oldData.buyerId == uid
+          ? canBuyerUpdateOffer(oldData, newData, changed, lPath)
+          : canWinningBuyerDeclineCompeting(oldData, newData, changed, lPath));
+    }
+
+    function canUpdateOffer() {
+      let role = actorState();
+      return role == 2 || (role == 1 && canActiveUserUpdateOffer());
+    }
+
     // Hardened Spark-plan Production Rules
     match /users/{userId} {
       allow read: if isOwner(userId) || isAdmin();
@@ -140,6 +362,7 @@ service cloud.firestore {
         && request.resource.data.get('role', 'customer') == 'customer'
         && request.resource.data.get('isAdmin', false) == false
         && request.resource.data.get('isBanned', false) != true
+        && request.resource.data.get('verifiedStudent', false) == false
         && request.resource.data.get('soldCount', 0) == 0
         && request.resource.data.get('boughtCount', 0) == 0
         && request.resource.data.get('ratingSum', 0) == 0
@@ -157,8 +380,8 @@ service cloud.firestore {
           && unchanged('ratingCount')
           && unchanged('lastCompletedOfferId')
           && unchanged('lastRatingId'))
-        || (isNotBanned() && isValidRatingUserStatsUpdate(userId))
-        || (isNotBanned() && isValidCompletionUserStatsUpdate(userId));
+        || (isNotBanned() && isValidRatingUserStatsWithId(userId, request.resource.data.get('lastRatingId', '')))
+        || (isNotBanned() && isValidCompletionUserStatsWithOffer(userId, request.resource.data.get('lastCompletedOfferId', '')));
       allow delete: if isOwner(userId) || isAdmin();
 
       match /favorites/{listingId} {
@@ -211,6 +434,13 @@ service cloud.firestore {
     match /listings/{listingId} {
       allow read: if true;
       allow create: if isNotBanned()
+        && request.resource.data.keys().hasOnly([
+          'title', 'keywords', 'description', 'category', 'condition',
+          'location', 'price', 'negotiable', 'imageUrl', 'images',
+          'sellerId', 'sellerName', 'sellerPhotoUrl', 'status',
+          'reservedFor', 'statsCounted', 'feePaid', 'feeTransactionId',
+          'createdAt', 'updatedAt'
+        ])
         && request.resource.data.sellerId == request.auth.uid
         && request.resource.data.status == 'available'
         && request.resource.data.get('reservedFor', '') == ''
@@ -219,24 +449,9 @@ service cloud.firestore {
         && request.resource.data.title.size() >= 3
         && request.resource.data.price is int
         && request.resource.data.price > 0;
-      allow update: if isAdmin() || (isNotBanned()
-        && unchanged('sellerId')
-        && (resource.data.get('sellerId', '') == request.auth.uid
-          || (resource.data.get('status', '') == 'available'
-            && request.resource.data.status == 'reserved'
-            && request.resource.data.reservedFor == request.auth.uid
-            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'reservedFor', 'updatedAt'])
-            && exists(offerPath(listingId + '_' + request.auth.uid))
-            && get(offerPath(listingId + '_' + request.auth.uid)).data.status == 'countered'
-            && getAfter(offerPath(listingId + '_' + request.auth.uid)).data.status == 'accepted')
-          || (resource.data.get('status', '') == 'reserved'
-            && resource.data.get('reservedFor', '') == request.auth.uid
-            && request.resource.data.status == 'available'
-            && request.resource.data.reservedFor == ''
-            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'reservedFor', 'updatedAt'])
-            && exists(offerPath(listingId + '_' + request.auth.uid))
-            && get(offerPath(listingId + '_' + request.auth.uid)).data.status == 'accepted'
-            && getAfter(offerPath(listingId + '_' + request.auth.uid)).data.status == 'withdrawn')));
+
+      allow update: if signedIn() && canUpdateListing(listingId);
+
       allow delete: if isAdmin() || (isNotBanned() && resource.data.get('sellerId', '') == request.auth.uid);
 
       match /comments/{commentId} {
@@ -261,6 +476,12 @@ service cloud.firestore {
           || resource.data.get('sellerId', '') == request.auth.uid));
 
       allow create: if isNotBanned()
+        && request.resource.data.keys().hasOnly([
+          'listingId', 'listingTitle', 'sellerId', 'sellerName',
+          'sellerPhotoUrl', 'buyerId', 'buyerName', 'buyerPhotoUrl',
+          'amount', 'lastUpdatedBy', 'history', 'message', 'status',
+          'isRated', 'feePaid', 'feeTransactionId', 'createdAt', 'updatedAt'
+        ])
         && offerId == request.resource.data.listingId + '_' + request.auth.uid
         && request.resource.data.buyerId == request.auth.uid
         && request.resource.data.sellerId != request.auth.uid
@@ -269,104 +490,13 @@ service cloud.firestore {
         && request.resource.data.get('isRated', false) == false
         && request.resource.data.amount is int
         && request.resource.data.amount > 0
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.updatedAt == request.time
         && exists(listingPath(request.resource.data.listingId))
         && get(listingPath(request.resource.data.listingId)).data.status == 'available'
         && get(listingPath(request.resource.data.listingId)).data.sellerId == request.resource.data.sellerId;
 
-      allow update: if isAdmin() || (isNotBanned()
-        && unchanged('buyerId')
-        && unchanged('sellerId')
-        && unchanged('listingId')
-        && (
-          // 1. Buyer re-submits or updates non-expired/reopened offer (never expired/accepted/completed)
-          (resource.data.buyerId == request.auth.uid
-            && resource.data.status in ['declined', 'withdrawn', 'pending', 'countered']
-            && request.resource.data.status == 'pending'
-            && request.resource.data.lastUpdatedBy == request.auth.uid
-            && request.resource.data.amount is int
-            && request.resource.data.amount > 0
-            && request.resource.data.get('isRated', false) == false
-            && get(listingPath(resource.data.listingId)).data.status == 'available')
-
-          // 2. Seller sends counter-offer
-          || (resource.data.sellerId == request.auth.uid
-            && resource.data.status in ['pending', 'countered']
-            && offerNotExpired(resource.data)
-            && request.resource.data.status == 'countered'
-            && request.resource.data.lastUpdatedBy == request.auth.uid
-            && request.resource.data.amount is int
-            && request.resource.data.amount > 0
-            && unchanged('isRated')
-            && get(listingPath(resource.data.listingId)).data.status == 'available')
-
-          // 3. Seller accepts buyer's pending offer (atomically reserves listing)
-          || (resource.data.sellerId == request.auth.uid
-            && resource.data.status == 'pending'
-            && offerNotExpired(resource.data)
-            && request.resource.data.status == 'accepted'
-            && unchanged('amount')
-            && request.resource.data.get('handoverCode', '') is string
-            && request.resource.data.get('handoverCode', '').size() >= 4
-            && get(listingPath(resource.data.listingId)).data.status == 'available'
-            && getAfter(listingPath(resource.data.listingId)).data.status == 'reserved'
-            && getAfter(listingPath(resource.data.listingId)).data.reservedFor == resource.data.buyerId)
-
-          // 4. Buyer accepts seller's counter-offer (atomically reserves listing)
-          || (resource.data.buyerId == request.auth.uid
-            && resource.data.status == 'countered'
-            && resource.data.get('lastUpdatedBy', '') != request.auth.uid
-            && offerNotExpired(resource.data)
-            && request.resource.data.status == 'accepted'
-            && unchanged('amount')
-            && request.resource.data.get('handoverCode', '') is string
-            && request.resource.data.get('handoverCode', '').size() >= 4
-            && get(listingPath(resource.data.listingId)).data.status == 'available'
-            && getAfter(listingPath(resource.data.listingId)).data.status == 'reserved'
-            && getAfter(listingPath(resource.data.listingId)).data.reservedFor == request.auth.uid)
-
-          // 5. Seller declines active offer or competing offer cleanup
-          || (resource.data.sellerId == request.auth.uid
-            && resource.data.status in ['pending', 'countered', 'accepted']
-            && request.resource.data.status == 'declined'
-            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'updatedAt']))
-
-          // 6. Winning buyer's acceptCounter atomically declines competing offers on same listing
-          || (resource.data.status in ['pending', 'countered']
-            && request.resource.data.status == 'declined'
-            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'updatedAt'])
-            && get(listingPath(resource.data.listingId)).data.status == 'available'
-            && getAfter(listingPath(resource.data.listingId)).data.status == 'reserved'
-            && getAfter(listingPath(resource.data.listingId)).data.reservedFor == request.auth.uid)
-
-          // 7. Buyer declines counter or withdraws active/accepted offer
-          || (resource.data.buyerId == request.auth.uid
-            && resource.data.status in ['pending', 'countered', 'accepted']
-            && ((request.resource.data.status == 'declined' && resource.data.status == 'countered')
-              || request.resource.data.status == 'withdrawn')
-            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'updatedAt']))
-
-          // 8. Seller marks accepted offer completed (atomically marks listing sold)
-          || (resource.data.sellerId == request.auth.uid
-            && resource.data.status == 'accepted'
-            && request.resource.data.status == 'completed'
-            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'updatedAt'])
-            && getAfter(listingPath(resource.data.listingId)).data.status == 'sold')
-
-          // 9. Expire pending/countered offers strictly after 48h server time
-          || ((resource.data.buyerId == request.auth.uid || resource.data.sellerId == request.auth.uid)
-            && resource.data.status in ['pending', 'countered']
-            && offerIsExpired(resource.data)
-            && request.resource.data.status == 'expired'
-            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'updatedAt']))
-
-          // 10. Mark completed offer as rated only when rating document is created in same tx
-          || (resource.data.buyerId == request.auth.uid
-            && resource.data.status == 'completed'
-            && resource.data.get('isRated', false) == false
-            && request.resource.data.isRated == true
-            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['isRated'])
-            && existsAfter(ratingPath(resource.data.listingId)))
-        ));
+      allow update: if signedIn() && canUpdateOffer();
 
       allow delete: if isAdmin();
 

@@ -99,13 +99,7 @@ class FirestoreRatingRepository implements RatingRepository {
         );
       }
 
-      final sellerSnap = await tx.get(sellerRef);
       final pubSellerSnap = await tx.get(pubSellerRef);
-      final sellerData = sellerSnap.data() ?? pubSellerSnap.data() ?? {};
-
-      final nextSum = ((sellerData['ratingSum'] as num?)?.toInt() ?? 0) + stars;
-      final nextCount =
-          ((sellerData['ratingCount'] as num?)?.toInt() ?? 0) + 1;
 
       tx.set(ratingRef, {
         'listingId': listingId,
@@ -120,8 +114,8 @@ class FirestoreRatingRepository implements RatingRepository {
       tx.set(
         sellerRef,
         {
-          'ratingSum': nextSum,
-          'ratingCount': nextCount,
+          'ratingSum': FieldValue.increment(stars),
+          'ratingCount': FieldValue.increment(1),
           'lastRatingId': listingId,
         },
         SetOptions(merge: true),
@@ -130,8 +124,8 @@ class FirestoreRatingRepository implements RatingRepository {
         tx.set(
           pubSellerRef,
           {
-            'ratingSum': nextSum,
-            'ratingCount': nextCount,
+            'ratingSum': FieldValue.increment(stars),
+            'ratingCount': FieldValue.increment(1),
           },
           SetOptions(merge: true),
         );

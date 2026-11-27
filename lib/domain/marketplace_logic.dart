@@ -213,6 +213,11 @@ class MarketplaceLogic {
           'This offer expired after 48 hours and cannot be reactivated',
         );
       }
+      if (existingOffer.status == 'countered') {
+        throw const OfferValidationException(
+          'Respond to the seller\'s counter-offer (Accept, Decline Counter, or Withdraw) before submitting a new offer',
+        );
+      }
     }
 
     final isReopening = existingOffer == null ||
@@ -293,6 +298,12 @@ class MarketplaceLogic {
         if (offer.status != 'pending' && offer.status != 'countered') {
           throw const OfferValidationException(
             'Only active pending or countered offers can be countered',
+          );
+        }
+        if (offer.status == 'countered' &&
+            (offer.lastUpdatedBy.isEmpty || offer.lastUpdatedBy == actorUid)) {
+          throw const OfferValidationException(
+            'Waiting for the buyer to respond to your previous counter-offer',
           );
         }
         if (expired) {
@@ -399,6 +410,11 @@ class MarketplaceLogic {
             'This offer is already closed',
           );
         }
+        if (expired && offer.status != 'accepted') {
+          throw const OfferValidationException(
+            'This offer has already expired after 48 hours',
+          );
+        }
         final releaseListing =
             offer.status == 'accepted' && listing.isReserved;
         return OfferTransitionPlan(
@@ -419,6 +435,11 @@ class MarketplaceLogic {
             'Only a counter-offer can be declined by the buyer',
           );
         }
+        if (expired) {
+          throw const OfferValidationException(
+            'This counter-offer has already expired after 48 hours',
+          );
+        }
         return OfferTransitionPlan(
           nextOfferStatus: 'declined',
           lastUpdatedBy: actorUid,
@@ -431,6 +452,11 @@ class MarketplaceLogic {
           );
         }
         if (offer.status == 'pending' || offer.status == 'countered') {
+          if (expired) {
+            throw const OfferValidationException(
+              'This offer has already expired after 48 hours',
+            );
+          }
           return OfferTransitionPlan(
             nextOfferStatus: 'withdrawn',
             lastUpdatedBy: actorUid,

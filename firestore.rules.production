@@ -1,5 +1,4 @@
 rules_version = '2';
-// Strict Production Rules — Activate after upgrading Firebase to Blaze and deploying `functions/`.
 service cloud.firestore {
   match /databases/{database}/documents {
     function signedIn() {
@@ -10,28 +9,39 @@ service cloud.firestore {
       return signedIn() && request.auth.uid == userId;
     }
 
-    function userExists(uid) {
-      return exists(/databases/$(database)/documents/users/$(uid));
+    function userPath(uid) {
+      return /databases/$(database)/documents/users/$(uid);
     }
 
-    function userDoc(uid) {
-      return get(/databases/$(database)/documents/users/$(uid)).data;
+    function listingPath(listingId) {
+      return /databases/$(database)/documents/listings/$(listingId);
+    }
+
+    function offerPath(offerId) {
+      return /databases/$(database)/documents/offers/$(offerId);
+    }
+
+    function ratingPath(listingId) {
+      return /databases/$(database)/documents/ratings/$(listingId);
+    }
+
+    function actorStateFromDoc(u) {
+      return (u.get('role', 'customer') == 'admin' || u.get('isAdmin', false) == true)
+        ? 2
+        : (u.get('isBanned', false) == true ? 0 : 1);
+    }
+
+    function actorState() {
+      let p = userPath(request.auth.uid);
+      return !exists(p) ? 1 : actorStateFromDoc(get(p).data);
     }
 
     function isAdmin() {
-      return signedIn()
-        && userExists(request.auth.uid)
-        && (
-          userDoc(request.auth.uid).get('role', 'customer') == 'admin'
-          || userDoc(request.auth.uid).get('isAdmin', false) == true
-        );
+      return signedIn() && actorState() == 2;
     }
 
     function isNotBanned() {
-      return signedIn() && (
-        !userExists(request.auth.uid)
-        || userDoc(request.auth.uid).get('isBanned', false) != true
-      );
+      return signedIn() && actorState() != 0;
     }
 
     function unchanged(field) {
@@ -43,26 +53,336 @@ service cloud.firestore {
       return exists(/databases/$(database)/documents/chats/$(threadId));
     }
 
+    function offerNotExpired(offerData) {
+      return offerData.createdAt is timestamp
+        && offerData.createdAt + duration.value(48, 'h') > request.time;
+    }
+
+    function offerIsExpired(offerData) {
+      return offerData.createdAt is timestamp
+        && request.time >= offerData.createdAt + duration.value(48, 'h');
+    }
+
+    function isValidRatingUserStatsWithId(userId, ratingId) {
+      return ratingId is string
+        && ratingId.size() > 0
+        && request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(['ratingSum', 'ratingCount', 'lastRatingId'])
+        && !exists(ratingPath(ratingId))
+        && existsAfter(ratingPath(ratingId))
+        && getAfter(ratingPath(ratingId)).data.sellerId == userId
+        && getAfter(ratingPath(ratingId)).data.buyerId == request.auth.uid
+        && request.resource.data.get('ratingCount', 0) == resource.data.get('ratingCount', 0) + 1
+        && request.resource.data.get('ratingSum', 0)
+          == resource.data.get('ratingSum', 0) + getAfter(ratingPath(ratingId)).data.stars;
+    }
+
+    function isValidCompletionUserStatsWithOffer(userId, completedOfferId) {
+      return completedOfferId is string
+        && completedOfferId.size() > 0
+        && request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(['soldCount', 'boughtCount', 'lastCompletedOfferId'])
+        && exists(offerPath(completedOfferId))
+        && get(offerPath(completedOfferId)).data.sellerId == request.auth.uid
+        && get(offerPath(completedOfferId)).data.status == 'accepted'
+        && getAfter(offerPath(completedOfferId)).data.status == 'completed'
+        && get(listingPath(get(offerPath(completedOfferId)).data.listingId)).data.get('statsCounted', false) == false
+        && (userId == get(offerPath(completedOfferId)).data.sellerId
+          || userId == get(offerPath(completedOfferId)).data.buyerId)
+        && request.resource.data.get('soldCount', 0)
+          == resource.data.get('soldCount', 0)
+            + (userId == get(offerPath(completedOfferId)).data.sellerId ? 1 : 0)
+        && request.resource.data.get('boughtCount', 0)
+          == resource.data.get('boughtCount', 0)
+            + (userId == get(offerPath(completedOfferId)).data.buyerId ? 1 : 0);
+    }
+
+    function statsMatchUserDoc(userId) {
+      return exists(userPath(userId))
+        && request.resource.data.get('soldCount', 0) == get(userPath(userId)).data.get('soldCount', 0)
+        && request.resource.data.get('boughtCount', 0) == get(userPath(userId)).data.get('boughtCount', 0)
+        && request.resource.data.get('ratingSum', 0) == get(userPath(userId)).data.get('ratingSum', 0)
+        && request.resource.data.get('ratingCount', 0) == get(userPath(userId)).data.get('ratingCount', 0);
+    }
+
+    function statsMatchAfterUserDoc(userId) {
+      return request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(['soldCount', 'boughtCount', 'ratingSum', 'ratingCount'])
+        && request.resource.data.get('soldCount', 0) == getAfter(userPath(userId)).data.get('soldCount', 0)
+        && request.resource.data.get('boughtCount', 0) == getAfter(userPath(userId)).data.get('boughtCount', 0)
+        && request.resource.data.get('ratingSum', 0) == getAfter(userPath(userId)).data.get('ratingSum', 0)
+        && request.resource.data.get('ratingCount', 0) == getAfter(userPath(userId)).data.get('ratingCount', 0);
+    }
+
+    function listingOfferPath(listingId, buyerUid) {
+      return offerPath(listingId + '_' + buyerUid);
+    }
+
+    function canSellerReserveForBuyer(offerP) {
+      return exists(offerP)
+        && get(offerP).data.status == 'pending'
+        && getAfter(offerP).data.status == 'accepted';
+    }
+
+    function canSellerReleaseBuyerOffer(offerP) {
+      return !exists(offerP)
+        || get(offerP).data.status != 'accepted'
+        || getAfter(offerP).data.status == 'declined';
+    }
+
+    function canSellerCompleteBuyerOffer(offerP) {
+      return exists(offerP)
+        && get(offerP).data.status == 'accepted'
+        && getAfter(offerP).data.status == 'completed';
+    }
+
+    function canSellerTransitionListing(listingId, oldData, newData, changed) {
+      let nextStatus = newData.status;
+      let prevStatus = oldData.status;
+      let prevBuyer = oldData.get('reservedFor', '');
+      return (nextStatus == 'reserved'
+          && prevStatus == 'available'
+          && changed.hasOnly(['status', 'reservedFor', 'updatedAt'])
+          && (newData.reservedFor == ''
+            || (newData.reservedFor is string
+              && newData.reservedFor.size() > 0
+              && canSellerReserveForBuyer(listingOfferPath(listingId, newData.reservedFor)))))
+        || (nextStatus == 'available'
+          && prevStatus == 'reserved'
+          && newData.reservedFor == ''
+          && changed.hasOnly(['status', 'reservedFor', 'updatedAt'])
+          && (prevBuyer == ''
+            || canSellerReleaseBuyerOffer(listingOfferPath(listingId, prevBuyer))))
+        || (nextStatus == 'sold'
+          && prevStatus in ['available', 'reserved']
+          && ((prevBuyer == ''
+              && newData.reservedFor == ''
+              && changed.hasOnly(['status', 'reservedFor', 'updatedAt']))
+            || (prevStatus == 'reserved'
+              && prevBuyer != ''
+              && newData.reservedFor == prevBuyer
+              && changed.hasOnly(['status', 'reservedFor', 'statsCounted', 'updatedAt'])
+              && canSellerCompleteBuyerOffer(listingOfferPath(listingId, prevBuyer))
+              && (!('statsCounted' in changed)
+                || (oldData.get('statsCounted', false) == false
+                  && newData.statsCounted == true)))));
+    }
+
+    function canSellerUpdateListing(listingId, oldData, newData, changed) {
+      return changed.hasOnly(['sellerName', 'sellerPhotoUrl'])
+        || (oldData.status in ['available', 'reserved']
+          && changed.hasOnly([
+            'title', 'keywords', 'description', 'category', 'condition',
+            'location', 'price', 'negotiable', 'imageUrl', 'images', 'updatedAt'
+          ])
+          && newData.title is string
+          && newData.title.size() >= 3
+          && newData.price is int
+          && newData.price > 0)
+        || canSellerTransitionListing(listingId, oldData, newData, changed);
+    }
+
+    function canBuyerUpdateListing(listingId, oldData, newData, changed) {
+      let offerP = listingOfferPath(listingId, request.auth.uid);
+      return changed.hasOnly(['status', 'reservedFor', 'updatedAt'])
+        && exists(offerP)
+        && ((oldData.status == 'available'
+            && newData.status == 'reserved'
+            && newData.reservedFor == request.auth.uid
+            && get(offerP).data.status == 'countered'
+            && getAfter(offerP).data.status == 'accepted')
+          || (oldData.status == 'reserved'
+            && oldData.reservedFor == request.auth.uid
+            && newData.status == 'available'
+            && newData.reservedFor == ''
+            && get(offerP).data.status == 'accepted'
+            && getAfter(offerP).data.status == 'withdrawn'));
+    }
+
+    function canActiveUserUpdateListing(listingId) {
+      let oldData = resource.data;
+      let newData = request.resource.data;
+      let changed = newData.diff(oldData).affectedKeys();
+      return oldData.sellerId == request.auth.uid
+        ? canSellerUpdateListing(listingId, oldData, newData, changed)
+        : canBuyerUpdateListing(listingId, oldData, newData, changed);
+    }
+
+    function canUpdateListing(listingId) {
+      let role = actorState();
+      return role == 2 || (role == 1 && canActiveUserUpdateListing(listingId));
+    }
+
+    function listingWasReservedForBuyer(lPath, buyerUid) {
+      return get(lPath).data.status == 'available'
+        && getAfter(lPath).data.status == 'reserved'
+        && getAfter(lPath).data.reservedFor == buyerUid;
+    }
+
+    function listingReleasedToAvailable(lPath) {
+      return getAfter(lPath).data.status == 'available'
+        && getAfter(lPath).data.get('reservedFor', '') == '';
+    }
+
+    function canSellerUpdateOffer(oldData, newData, changed, lPath) {
+      let nextStatus = newData.status;
+      let prevStatus = oldData.status;
+      return newData.updatedAt == request.time && (
+        (nextStatus == 'countered'
+          && prevStatus in ['pending', 'countered']
+          && (prevStatus == 'pending'
+            || (oldData.get('lastUpdatedBy', '') != ''
+              && oldData.get('lastUpdatedBy', '') != request.auth.uid))
+          && offerNotExpired(oldData)
+          && newData.lastUpdatedBy == request.auth.uid
+          && newData.amount is int
+          && newData.amount > 0
+          && changed.hasOnly(['amount', 'status', 'lastUpdatedBy', 'history', 'updatedAt'])
+          && get(lPath).data.status == 'available')
+        || (nextStatus == 'accepted'
+          && prevStatus == 'pending'
+          && offerNotExpired(oldData)
+          && newData.get('handoverCode', '') is string
+          && newData.get('handoverCode', '').size() >= 4
+          && changed.hasOnly(['status', 'handoverCode', 'updatedAt'])
+          && listingWasReservedForBuyer(lPath, oldData.buyerId))
+        || (nextStatus == 'declined'
+          && changed.hasOnly(['status', 'updatedAt'])
+          && ((prevStatus in ['pending', 'countered']
+              && (offerNotExpired(oldData)
+                || get(lPath).data.status in ['reserved', 'sold']
+                || getAfter(lPath).data.status in ['reserved', 'sold']))
+            || (prevStatus == 'accepted'
+              && listingReleasedToAvailable(lPath))))
+        || (nextStatus == 'completed'
+          && prevStatus == 'accepted'
+          && changed.hasOnly(['status', 'updatedAt'])
+          && getAfter(lPath).data.status == 'sold')
+        || (nextStatus == 'expired'
+          && prevStatus in ['pending', 'countered']
+          && offerIsExpired(oldData)
+          && changed.hasOnly(['status', 'updatedAt']))
+      );
+    }
+
+    function canBuyerUpdateOffer(oldData, newData, changed, lPath) {
+      let nextStatus = newData.status;
+      let prevStatus = oldData.status;
+      let uid = request.auth.uid;
+      return (nextStatus == 'pending'
+          && newData.lastUpdatedBy == uid
+          && newData.amount is int
+          && newData.amount > 0
+          && newData.updatedAt == request.time
+          && get(lPath).data.status == 'available'
+          && ((prevStatus == 'pending'
+              && offerNotExpired(oldData)
+              && changed.hasOnly([
+                'amount', 'message', 'listingTitle', 'sellerName',
+                'sellerPhotoUrl', 'buyerName', 'buyerPhotoUrl',
+                'lastUpdatedBy', 'history', 'feePaid', 'feeTransactionId',
+                'updatedAt'
+              ]))
+            || (prevStatus in ['declined', 'withdrawn']
+              && newData.get('isRated', false) == false
+              && newData.createdAt == request.time
+              && changed.hasOnly([
+                'amount', 'message', 'status', 'listingTitle', 'sellerName',
+                'sellerPhotoUrl', 'buyerName', 'buyerPhotoUrl', 'lastUpdatedBy',
+                'history', 'isRated', 'feePaid', 'feeTransactionId',
+                'createdAt', 'updatedAt'
+              ]))))
+        || (nextStatus == 'accepted'
+          && prevStatus == 'countered'
+          && oldData.get('lastUpdatedBy', '') == oldData.sellerId
+          && offerNotExpired(oldData)
+          && newData.get('handoverCode', '') is string
+          && newData.get('handoverCode', '').size() >= 4
+          && newData.updatedAt == request.time
+          && changed.hasOnly(['status', 'handoverCode', 'updatedAt'])
+          && listingWasReservedForBuyer(lPath, uid))
+        || (nextStatus == 'declined'
+          && newData.updatedAt == request.time
+          && changed.hasOnly(['status', 'updatedAt'])
+          && ((prevStatus == 'countered' && offerNotExpired(oldData))
+            || (prevStatus in ['pending', 'countered']
+              && get(lPath).data.status in ['reserved', 'sold']
+              && oldData.buyerId != get(lPath).data.get('reservedFor', ''))))
+        || (nextStatus == 'withdrawn'
+          && newData.updatedAt == request.time
+          && changed.hasOnly(['status', 'updatedAt'])
+          && ((prevStatus in ['pending', 'countered'] && offerNotExpired(oldData))
+            || (prevStatus == 'accepted' && listingReleasedToAvailable(lPath))))
+        || (nextStatus == 'expired'
+          && prevStatus in ['pending', 'countered']
+          && offerIsExpired(oldData)
+          && newData.updatedAt == request.time
+          && changed.hasOnly(['status', 'updatedAt']))
+        || (prevStatus == 'completed'
+          && nextStatus == 'completed'
+          && oldData.get('isRated', false) == false
+          && newData.isRated == true
+          && changed.hasOnly(['isRated'])
+          && existsAfter(ratingPath(oldData.listingId)));
+    }
+
+    function canWinningBuyerDeclineCompeting(oldData, newData, changed, lPath) {
+      let uid = request.auth.uid;
+      return oldData.status in ['pending', 'countered']
+        && newData.status == 'declined'
+        && newData.updatedAt == request.time
+        && changed.hasOnly(['status', 'updatedAt'])
+        && (listingWasReservedForBuyer(lPath, uid)
+          || (get(lPath).data.status in ['reserved', 'sold']
+            && get(lPath).data.get('reservedFor', '') == uid));
+    }
+
+    function canActiveUserUpdateOffer() {
+      let oldData = resource.data;
+      let newData = request.resource.data;
+      let changed = newData.diff(oldData).affectedKeys();
+      let lPath = listingPath(oldData.listingId);
+      let uid = request.auth.uid;
+      return oldData.sellerId == uid
+        ? canSellerUpdateOffer(oldData, newData, changed, lPath)
+        : (oldData.buyerId == uid
+          ? canBuyerUpdateOffer(oldData, newData, changed, lPath)
+          : canWinningBuyerDeclineCompeting(oldData, newData, changed, lPath));
+    }
+
+    function canUpdateOffer() {
+      let role = actorState();
+      return role == 2 || (role == 1 && canActiveUserUpdateOffer());
+    }
+
+    // Hardened Spark-plan Production Rules
     match /users/{userId} {
       allow read: if isOwner(userId) || isAdmin();
       allow create: if isOwner(userId)
-        && request.resource.data.role == 'customer'
-        && request.resource.data.isAdmin == false
-        && (!('isBanned' in request.resource.data) || request.resource.data.isBanned == false)
-        && (!('soldCount' in request.resource.data) || request.resource.data.soldCount == 0)
-        && (!('boughtCount' in request.resource.data) || request.resource.data.boughtCount == 0)
-        && (!('ratingSum' in request.resource.data) || request.resource.data.ratingSum == 0)
-        && (!('ratingCount' in request.resource.data) || request.resource.data.ratingCount == 0);
-      allow update: if isAdmin() || (isOwner(userId)
-        && unchanged('role')
-        && unchanged('isAdmin')
-        && unchanged('isBanned')
-        && unchanged('soldCount')
-        && unchanged('boughtCount')
-        && unchanged('ratingSum')
-        && unchanged('ratingCount')
-        && unchanged('verifiedStudent'));
-      allow delete: if isAdmin();
+        && request.resource.data.get('role', 'customer') == 'customer'
+        && request.resource.data.get('isAdmin', false) == false
+        && request.resource.data.get('isBanned', false) != true
+        && request.resource.data.get('verifiedStudent', false) == false
+        && request.resource.data.get('soldCount', 0) == 0
+        && request.resource.data.get('boughtCount', 0) == 0
+        && request.resource.data.get('ratingSum', 0) == 0
+        && request.resource.data.get('ratingCount', 0) == 0;
+      allow update: if isAdmin()
+        || (isOwner(userId)
+          && isNotBanned()
+          && unchanged('role')
+          && unchanged('isAdmin')
+          && unchanged('isBanned')
+          && unchanged('verifiedStudent')
+          && unchanged('soldCount')
+          && unchanged('boughtCount')
+          && unchanged('ratingSum')
+          && unchanged('ratingCount')
+          && unchanged('lastCompletedOfferId')
+          && unchanged('lastRatingId'))
+        || (isNotBanned() && isValidRatingUserStatsWithId(userId, request.resource.data.get('lastRatingId', '')))
+        || (isNotBanned() && isValidCompletionUserStatsWithOffer(userId, request.resource.data.get('lastCompletedOfferId', '')));
+      allow delete: if isOwner(userId) || isAdmin();
 
       match /favorites/{listingId} {
         allow read, create, delete: if isOwner(userId);
@@ -72,7 +392,34 @@ service cloud.firestore {
 
     match /public_profiles/{userId} {
       allow read: if true;
-      allow write: if false;
+      allow create: if isAdmin() || (
+        isOwner(userId)
+        && isNotBanned()
+        && request.resource.data.get('isBanned', false) != true
+        && statsMatchUserDoc(userId)
+      );
+      allow update: if isAdmin()
+        || (isOwner(userId)
+          && isNotBanned()
+          && request.resource.data.get('isBanned', false) != true
+          && unchanged('soldCount')
+          && unchanged('boughtCount')
+          && unchanged('ratingSum')
+          && unchanged('ratingCount'))
+        || (isNotBanned()
+          && existsAfter(userPath(userId))
+          && statsMatchAfterUserDoc(userId)
+          && (
+            (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['ratingSum', 'ratingCount'])
+              && getAfter(userPath(userId)).data.get('lastRatingId', '') is string
+              && existsAfter(ratingPath(getAfter(userPath(userId)).data.get('lastRatingId', '')))
+              && getAfter(ratingPath(getAfter(userPath(userId)).data.get('lastRatingId', ''))).data.buyerId == request.auth.uid)
+            || (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['soldCount', 'boughtCount'])
+              && getAfter(userPath(userId)).data.get('lastCompletedOfferId', '') is string
+              && get(offerPath(getAfter(userPath(userId)).data.get('lastCompletedOfferId', ''))).data.sellerId == request.auth.uid
+              && getAfter(offerPath(getAfter(userPath(userId)).data.get('lastCompletedOfferId', ''))).data.status == 'completed')
+          ));
+      allow delete: if isOwner(userId) || isAdmin();
     }
 
     match /phone_directory/{phoneKey} {
@@ -81,29 +428,31 @@ service cloud.firestore {
       allow create, update: if signedIn()
         && request.resource.data.uid == request.auth.uid
         && isNotBanned();
-      allow delete: if isAdmin() || (signedIn() && resource.data.uid == request.auth.uid);
+      allow delete: if isAdmin() || (signedIn() && resource.data.get('uid', '') == request.auth.uid);
     }
 
     match /listings/{listingId} {
       allow read: if true;
       allow create: if isNotBanned()
+        && request.resource.data.keys().hasOnly([
+          'title', 'keywords', 'description', 'category', 'condition',
+          'location', 'price', 'negotiable', 'imageUrl', 'images',
+          'sellerId', 'sellerName', 'sellerPhotoUrl', 'status',
+          'reservedFor', 'statsCounted', 'feePaid', 'feeTransactionId',
+          'createdAt', 'updatedAt'
+        ])
         && request.resource.data.sellerId == request.auth.uid
         && request.resource.data.status == 'available'
+        && request.resource.data.get('reservedFor', '') == ''
+        && request.resource.data.get('statsCounted', false) == false
+        && request.resource.data.title is string
+        && request.resource.data.title.size() >= 3
         && request.resource.data.price is int
-        && request.resource.data.price > 0
-        && (!('statsCounted' in request.resource.data) || request.resource.data.statsCounted == false);
-      allow update: if isAdmin() || (isNotBanned()
-        && resource.data.sellerId == request.auth.uid
-        && unchanged('sellerId')
-        && unchanged('statsCounted')
-        && unchanged('feePaid')
-        && unchanged('feeTransactionId')
-        && (
-          request.resource.data.status == resource.data.status
-          || (resource.data.status == 'available' && request.resource.data.status == 'reserved')
-          || (resource.data.status == 'reserved' && request.resource.data.status == 'available')
-        ));
-      allow delete: if isAdmin() || (isNotBanned() && resource.data.sellerId == request.auth.uid);
+        && request.resource.data.price > 0;
+
+      allow update: if signedIn() && canUpdateListing(listingId);
+
+      allow delete: if isAdmin() || (isNotBanned() && resource.data.get('sellerId', '') == request.auth.uid);
 
       match /comments/{commentId} {
         allow read: if true;
@@ -114,8 +463,8 @@ service cloud.firestore {
           && request.resource.data.text.size() <= 800;
         allow update: if false;
         allow delete: if isAdmin() || (isNotBanned() && (
-          resource.data.authorId == request.auth.uid
-          || get(/databases/$(database)/documents/listings/$(listingId)).data.sellerId == request.auth.uid
+          resource.data.get('authorId', '') == request.auth.uid
+          || get(listingPath(listingId)).data.get('sellerId', '') == request.auth.uid
         ));
       }
     }
@@ -123,53 +472,57 @@ service cloud.firestore {
     match /offers/{offerId} {
       allow read: if isAdmin() || (signedIn()
         && (resource == null
-          || resource.data.buyerId == request.auth.uid
-          || resource.data.sellerId == request.auth.uid));
+          || resource.data.get('buyerId', '') == request.auth.uid
+          || resource.data.get('sellerId', '') == request.auth.uid));
+
       allow create: if isNotBanned()
+        && request.resource.data.keys().hasOnly([
+          'listingId', 'listingTitle', 'sellerId', 'sellerName',
+          'sellerPhotoUrl', 'buyerId', 'buyerName', 'buyerPhotoUrl',
+          'amount', 'lastUpdatedBy', 'history', 'message', 'status',
+          'isRated', 'feePaid', 'feeTransactionId', 'createdAt', 'updatedAt'
+        ])
+        && offerId == request.resource.data.listingId + '_' + request.auth.uid
         && request.resource.data.buyerId == request.auth.uid
         && request.resource.data.sellerId != request.auth.uid
-        && request.resource.data.amount is int
-        && request.resource.data.amount > 0
+        && request.resource.data.lastUpdatedBy == request.auth.uid
         && request.resource.data.status == 'pending'
-        && (!('feePaid' in request.resource.data) || request.resource.data.feePaid == false)
-        && (!('handoverCode' in request.resource.data) || request.resource.data.handoverCode == '');
-      allow update: if isAdmin() || (isNotBanned()
-        && (resource.data.buyerId == request.auth.uid
-          || resource.data.sellerId == request.auth.uid)
-        && unchanged('buyerId')
-        && unchanged('sellerId')
-        && unchanged('listingId')
-        && unchanged('feePaid')
-        && unchanged('feeTransactionId')
-        && unchanged('handoverCode')
+        && request.resource.data.get('isRated', false) == false
         && request.resource.data.amount is int
         && request.resource.data.amount > 0
-        && (
-          (resource.data.status in ['pending', 'countered']
-            && request.resource.data.status in ['countered', 'declined', 'withdrawn'])
-          || (resource.data.status == 'accepted'
-            && request.resource.data.status in ['declined', 'withdrawn']
-            && unchanged('amount'))
-        ));
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.updatedAt == request.time
+        && exists(listingPath(request.resource.data.listingId))
+        && get(listingPath(request.resource.data.listingId)).data.status == 'available'
+        && get(listingPath(request.resource.data.listingId)).data.sellerId == request.resource.data.sellerId;
+
+      allow update: if signedIn() && canUpdateOffer();
+
       allow delete: if isAdmin();
 
       match /private/{docId} {
-        allow read: if signedIn()
-          && (isAdmin()
-            || get(/databases/$(database)/documents/offers/$(offerId)).data.buyerId == request.auth.uid);
+        allow read: if isAdmin() || (signedIn()
+          && exists(offerPath(offerId))
+          && get(offerPath(offerId)).data.get('buyerId', '') == request.auth.uid);
         allow write: if false;
       }
     }
 
     match /chats/{threadId} {
       allow create: if isNotBanned()
-        && request.auth.uid in request.resource.data.get('participants', []);
+        && request.auth.uid in request.resource.data.get('participants', [])
+        && request.resource.data.participants is list
+        && request.resource.data.participants.size() == 2;
       allow read: if isAdmin() || (signedIn() && (
         resource == null
         || request.auth.uid in resource.data.get('participants', [])
       ));
       allow update: if isAdmin() || (isNotBanned()
-        && request.auth.uid in resource.data.get('participants', []));
+        && request.auth.uid in resource.data.get('participants', [])
+        && unchanged('participants')
+        && unchanged('buyerId')
+        && unchanged('sellerId')
+        && unchanged('listingId'));
       allow delete: if isAdmin();
 
       match /messages/{msgId} {
@@ -179,6 +532,8 @@ service cloud.firestore {
         ));
         allow create: if isNotBanned()
           && request.resource.data.senderId == request.auth.uid
+          && request.resource.data.text is string
+          && request.resource.data.text.size() > 0
           && chatExists(threadId)
           && request.auth.uid in get(/databases/$(database)/documents/chats/$(threadId)).data.get('participants', []);
         allow update, delete: if false;
@@ -187,7 +542,20 @@ service cloud.firestore {
 
     match /ratings/{listingId} {
       allow read: if true;
-      allow write: if false;
+      allow create: if isNotBanned()
+        && request.resource.data.listingId == listingId
+        && request.resource.data.buyerId == request.auth.uid
+        && request.resource.data.stars is int
+        && request.resource.data.stars >= 1
+        && request.resource.data.stars <= 5
+        && exists(listingPath(listingId))
+        && get(listingPath(listingId)).data.status == 'sold'
+        && get(listingPath(listingId)).data.sellerId == request.resource.data.sellerId
+        && exists(offerPath(listingId + '_' + request.auth.uid))
+        && get(offerPath(listingId + '_' + request.auth.uid)).data.buyerId == request.auth.uid
+        && get(offerPath(listingId + '_' + request.auth.uid)).data.sellerId == request.resource.data.sellerId
+        && get(offerPath(listingId + '_' + request.auth.uid)).data.status == 'completed';
+      allow update, delete: if false;
     }
 
     match /reports/{reportId} {
@@ -208,8 +576,25 @@ service cloud.firestore {
     }
 
     match /payments/{paymentId} {
-      allow read: if isAdmin() || (signedIn() && resource.data.userId == request.auth.uid);
-      allow write: if false;
+      allow read: if isAdmin() || (signedIn() && (
+        resource == null
+        || resource.data.get('userId', '') == request.auth.uid
+      ));
+      allow create: if isNotBanned()
+        && request.resource.data.userId == request.auth.uid
+        && request.resource.data.amount is int
+        && request.resource.data.amount >= 0
+        && request.resource.data.status == 'completed'
+        && request.resource.data.get('gatewayMode', '') == 'spark_sandbox';
+      allow update: if isAdmin() || (isNotBanned()
+        && resource.data.get('status', '') == 'completed'
+        && request.resource.data.status == 'refunded'
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status'])
+        && (resource.data.get('userId', '') == request.auth.uid
+          || (resource.data.get('type', '') == 'buyer_order_fee'
+            && exists(listingPath(resource.data.get('referenceId', '')))
+            && get(listingPath(resource.data.get('referenceId', ''))).data.get('sellerId', '') == request.auth.uid)));
+      allow delete: if false;
     }
   }
 }

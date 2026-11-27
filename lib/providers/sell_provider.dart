@@ -125,9 +125,15 @@ class SellProvider extends ChangeNotifier {
     final offerRepo = _offerRepo;
     if (offerRepo != null) {
       _offerSub = offerRepo.watchReceivedOffers(uid).listen((offers) {
+        final activeListingIds = {
+          for (final l in myListings)
+            if (l.isAvailable) l.id,
+        };
         final counts = <String, int>{};
         for (final o in offers) {
-          if (o.isActiveOffer) {
+          if (o.isActiveOffer &&
+              (activeListingIds.isEmpty ||
+                  activeListingIds.contains(o.listingId))) {
             counts[o.listingId] = (counts[o.listingId] ?? 0) + 1;
           }
         }

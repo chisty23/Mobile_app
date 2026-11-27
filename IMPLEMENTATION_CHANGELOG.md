@@ -1,8 +1,8 @@
 # PassItOn (Project P07) — Implementation Changelog
 
-**Branch:** `p07-compliance` (local development only; not pushed to GitHub and not deployed to Firebase)  
+**Branch:** `main` (final release hardening, verification, push, and Spark deployment)  
 **Target Firebase Project:** `pass-it-on-2f422` (Spark Plan)  
-**Architecture Enforced:** `Widget → Provider → Repository → Firebase` + pure domain logic (`lib/domain/marketplace_logic.dart`)
+**Architecture Enforced:** `Widget -> Provider -> Repository -> Firebase` + pure domain logic (`lib/domain/marketplace_logic.dart`)
 
 ---
 
@@ -84,3 +84,28 @@ Removed direct `FirebaseAuth.instance` and `FirebaseFirestore.instance` usage fr
   - Locked `/ratings/{listingId}` creation to verified buyers of completed offers on `'sold'` listings (1-5 integer stars).
   - Scoped `/payments/{paymentId}` writes to `gatewayMode == 'spark_sandbox'` and owner/seller refund transitions.
 - **`emulator_tests/package.json` & `emulator_tests/firestore_rules_test.mjs`**: Added `@firebase/rules-unit-testing` test suite covering PII isolation, stat/role tamper rejection, banned/anon denials, offer actor/expiry/atomic-accept rules, and completed-sale/duplicate-rating enforcement.
+
+
+---
+
+## 3. Final Release Hardening (`main`)
+
+1. **Firestore Rules Security, Expression Budget & Production Parity (`firestore.rules`, `firestore.rules.production`):**
+   - Refactored `/listings/{listingId}` and `/offers/{offerId}` update rules with `rules_version = '2'` `let`-scoped dispatch helpers (`actorState`, `canUpdateListing`, `canUpdateOffer`), keeping runtime CEL evaluation strictly below Firestore's 1,000-expression cap on both allowed and denied paths.
+   - Restricted seller listing updates explicitly to allowed fields (`sellerName`/`sellerPhotoUrl` sync, detail edits when `available`/`reserved`, and transition-linked status changes) preventing tampering with `sellerId`, `createdAt`, `feePaid`, `feeTransactionId`, or forged `statsCounted`/`reservedFor`.
+   - Linked reservation release (`reserved -> available`), seller handover completion (`reserved -> sold`), buyer counter-acceptance, and buyer meetup cancellation (`withdrawn`) via `get()` / `getAfter()` offer-state consistency checks.
+   - Synced `firestore.rules.production` identically with `firestore.rules` (active Spark-plan production ruleset).
+2. **Offer State Machine, Alternating Counter-Offers & Exact 48h Expiry (`lib/models.dart`, `lib/domain/marketplace_logic.dart`, `lib/screens/offers_screen.dart`):**
+   - Fixed `MarketOffer.isExpiredAt` to compare exact `Duration(hours: 48)` instead of truncated integer hours (`inHours >= 48`).
+   - Enforced alternating counter-offer turns (`lastUpdatedBy` check in both `MarketplaceLogic.validateTransition`, `OffersScreen` button visibility, and `firestore.rules`) so sellers cannot counter their own counter-offer (`"Counter"` label instead of `"Re-Counter"`).
+   - Blocked buyers from resetting `countered` offers back to `pending` via `validateOfferSubmission` / `firestore.rules`, and omitted `createdAt` when updating an already `pending` offer so the 48h expiry clock cannot be reset.
+   - Blocked `decline`, `withdraw`, and `counter` actions on expired (`>= 48h`) pending/countered offers across Dart logic, repositories, and `firestore.rules`, while permitting terminal `'expired'` cleanup.
+3. **Concurrent Offers, Bounded Cleanup, Reservation Release & PII-Safe Stats (`lib/repositories/offer_repository.dart`, `lib/repositories/rating_repository.dart`, `lib/providers/sell_provider.dart`):**
+   - Lowered in-transaction competing-offer decline limit to `maxCompetingOffersInTransaction = 450` (reserving headroom inside Firestore's 500-op transaction limit) and ran bounded chunked cleanup (`maxOverflowCleanupBatches = 30`, `overflowCleanupBatchSize = 300`) unconditionally after reserve/accept to catch both >450 overflow bids and late-arriving concurrent bids (throwing explicit `OfferValidationException` if the bounded cleanup budget is exhausted).
+   - Hardened `releaseReservedListingWithOffers` and `completeReservedListingBySeller` into full transactions resolving deterministic `{listingId}_{buyerId}` offer IDs cleanly before writing.
+   - Switched handover stat updates (`soldCount`/`boughtCount`) and rating stat updates (`ratingSum`/`ratingCount`) to `FieldValue.increment` in `OfferRepository` and `RatingRepository`, eliminating cross-user reads on private `/users/{uid}` documents while maintaining atomic verification in `firestore.rules`.
+   - Restricted `SellProvider.pendingOfferCountFor` to `'available'` listings.
+4. **Expanded Automated Verification (`test/marketplace_providers_test.dart`, `emulator_tests/firestore_rules_test.mjs`):**
+   - Installed portable Eclipse Temurin OpenJDK 21 LTS (`21.0.13.1+2`) locally for Firebase Emulator execution.
+   - Added unit/provider tests for counter-turn locks, buyer `countered -> pending` reset blocking, expired action blocking, buyer accepted-reservation withdrawal, late-arriving concurrent bids, and >450 competing offer bounded cleanup.
+   - Added Firestore Emulator rules tests for seller protected listing fields & reservation release, counter-offer turns & post-reserve stale cleanup, verified handover completion & PII read isolation, and >48h / premature expiry rules.

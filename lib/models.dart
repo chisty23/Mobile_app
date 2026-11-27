@@ -355,7 +355,7 @@ class MarketOffer {
     if (status != 'pending' && status != 'countered') return false;
     if (createdAt == null) return false;
     final now = referenceTime ?? DateTime.now();
-    return now.difference(createdAt!.toDate()).inHours >= 48;
+    return now.difference(createdAt!.toDate()) >= const Duration(hours: 48);
   }
 
   bool get isExpired => isExpiredAt();

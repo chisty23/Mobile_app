@@ -53,8 +53,10 @@ class FirestoreOfferRepository implements OfferRepository {
   final FirebaseFirestore _db;
 
   /// Reserves headroom inside Firestore's 500-operation transaction limit
-  /// (1 accepted offer + 1 reserved listing + up to 480 declined offers).
-  static const int maxCompetingOffersInTransaction = 480;
+  /// (1 accepted offer + 1 reserved listing + up to 450 competing declines).
+  static const int maxCompetingOffersInTransaction = 450;
+  static const int maxOverflowCleanupBatches = 30;
+  static const int overflowCleanupBatchSize = 300;
 
   FirestoreOfferRepository({FirebaseFirestore? firestore})
       : _db = firestore ?? FirebaseFirestore.instance;
@@ -188,35 +190,35 @@ class FirestoreOfferRepository implements OfferRepository {
           ? sellerMeta.photoUrl
           : liveListing.sellerPhotoUrl;
 
+      final offerPayload = <String, dynamic>{
+        'listingId': liveListing.id,
+        'listingTitle': liveListing.title,
+        'sellerId': liveListing.sellerId,
+        'sellerName': sellerMeta.name,
+        'sellerPhotoUrl': effectiveSellerPhoto,
+        'buyerId': buyerUid,
+        'buyerName': buyerMeta.name,
+        'buyerPhotoUrl': buyerMeta.photoUrl,
+        'amount': amount,
+        'lastUpdatedBy': buyerUid,
+        'history': existingSnap.exists
+            ? FieldValue.arrayUnion([historyEntry])
+            : [historyEntry],
+        'message': message.trim(),
+        'status': 'pending',
+        'isRated': false,
+        'feePaid': feePaid || plan.alreadyPaidActive,
+        'feeTransactionId': feeTransactionId.isNotEmpty
+            ? feeTransactionId
+            : (existingOffer?.feeTransactionId ?? ''),
+        'updatedAt': FieldValue.serverTimestamp(),
+      };
+      if (!existingSnap.exists || plan.isReopening) {
+        offerPayload['createdAt'] = FieldValue.serverTimestamp();
+      }
       tx.set(
         offerRef,
-        {
-          'listingId': liveListing.id,
-          'listingTitle': liveListing.title,
-          'sellerId': liveListing.sellerId,
-          'sellerName': sellerMeta.name,
-          'sellerPhotoUrl': effectiveSellerPhoto,
-          'buyerId': buyerUid,
-          'buyerName': buyerMeta.name,
-          'buyerPhotoUrl': buyerMeta.photoUrl,
-          'amount': amount,
-          'lastUpdatedBy': buyerUid,
-          'history': existingSnap.exists
-              ? FieldValue.arrayUnion([historyEntry])
-              : [historyEntry],
-          'message': message.trim(),
-          'status': 'pending',
-          'isRated': false,
-          'feePaid': feePaid || plan.alreadyPaidActive,
-          'feeTransactionId': feeTransactionId.isNotEmpty
-              ? feeTransactionId
-              : (existingOffer?.feeTransactionId ?? ''),
-          'createdAt': plan.isReopening
-              ? FieldValue.serverTimestamp()
-              : (existingSnap.data()?['createdAt'] ??
-                  FieldValue.serverTimestamp()),
-          'updatedAt': FieldValue.serverTimestamp(),
-        },
+        offerPayload,
         SetOptions(merge: true),
       );
     });
@@ -274,14 +276,9 @@ class FirestoreOfferRepository implements OfferRepository {
         competingSnaps.add(await tx.get(ref));
       }
 
-      DocumentSnapshot<Map<String, dynamic>>? sellerSnap;
-      DocumentSnapshot<Map<String, dynamic>>? buyerSnap;
       DocumentSnapshot<Map<String, dynamic>>? pubSellerSnap;
       DocumentSnapshot<Map<String, dynamic>>? pubBuyerSnap;
       if (action == OfferAction.complete && !liveListing.statsCounted) {
-        sellerSnap =
-            await tx.get(_db.collection('users').doc(liveOffer.sellerId));
-        buyerSnap = await tx.get(_db.collection('users').doc(liveOffer.buyerId));
         pubSellerSnap = await tx
             .get(_db.collection('public_profiles').doc(liveOffer.sellerId));
         pubBuyerSnap = await tx
@@ -343,14 +340,11 @@ class FirestoreOfferRepository implements OfferRepository {
         }
       }
 
-      if (plan.markStatsCounted && sellerSnap != null && buyerSnap != null) {
-        final prevSold = (sellerSnap.data()?['soldCount'] as num?)?.toInt() ?? 0;
-        final prevBought =
-            (buyerSnap.data()?['boughtCount'] as num?)?.toInt() ?? 0;
+      if (plan.markStatsCounted) {
         tx.set(
           _db.collection('users').doc(liveOffer.sellerId),
           {
-            'soldCount': prevSold + 1,
+            'soldCount': FieldValue.increment(1),
             'lastCompletedOfferId': liveOffer.id,
           },
           SetOptions(merge: true),
@@ -358,7 +352,7 @@ class FirestoreOfferRepository implements OfferRepository {
         tx.set(
           _db.collection('users').doc(liveOffer.buyerId),
           {
-            'boughtCount': prevBought + 1,
+            'boughtCount': FieldValue.increment(1),
             'lastCompletedOfferId': liveOffer.id,
           },
           SetOptions(merge: true),
@@ -366,14 +360,14 @@ class FirestoreOfferRepository implements OfferRepository {
         if (pubSellerSnap != null && pubSellerSnap.exists) {
           tx.set(
             _db.collection('public_profiles').doc(liveOffer.sellerId),
-            {'soldCount': prevSold + 1},
+            {'soldCount': FieldValue.increment(1)},
             SetOptions(merge: true),
           );
         }
         if (pubBuyerSnap != null && pubBuyerSnap.exists) {
           tx.set(
             _db.collection('public_profiles').doc(liveOffer.buyerId),
-            {'boughtCount': prevBought + 1},
+            {'boughtCount': FieldValue.increment(1)},
             SetOptions(merge: true),
           );
         }
@@ -388,11 +382,16 @@ class FirestoreOfferRepository implements OfferRepository {
       }
     });
 
-    // Fallback cleanup ONLY if a listing somehow exceeded the 480 competing
-    // offer single-transaction cap; the reservation lock above is still atomic.
-    if ((action == OfferAction.accept || action == OfferAction.acceptCounter) &&
-        competingRefs.length >= maxCompetingOffersInTransaction) {
-      await _cleanupOverflowCompetingOffers(offer.listingId, offer.sellerId, offer.id);
+    // Bounded post-commit verification & cleanup for:
+    // (1) any late concurrent offers created between pre-tx read and commit, and
+    // (2) overflow beyond the 450 in-transaction competing-offer cap.
+    if (action == OfferAction.accept || action == OfferAction.acceptCounter) {
+      await _cleanupRemainingCompetingOffers(
+        listingId: offer.listingId,
+        sellerId: offer.sellerId,
+        acceptedOfferId: offer.id,
+        refundTxnsOut: declinedRefundTxns,
+      );
     }
 
     for (final txn in declinedRefundTxns) {
@@ -403,31 +402,45 @@ class FirestoreOfferRepository implements OfferRepository {
     }
   }
 
-  Future<void> _cleanupOverflowCompetingOffers(
-    String listingId,
-    String sellerId,
-    String acceptedOfferId,
-  ) async {
-    while (true) {
+  Future<void> _cleanupRemainingCompetingOffers({
+    required String listingId,
+    required String sellerId,
+    required String acceptedOfferId,
+    required List<String> refundTxnsOut,
+  }) async {
+    for (int batchIndex = 0;
+        batchIndex < maxOverflowCleanupBatches;
+        batchIndex++) {
       final snap = await _db
           .collection('offers')
           .where('listingId', isEqualTo: listingId)
           .where('sellerId', isEqualTo: sellerId)
           .where('status', whereIn: ['pending', 'countered'])
-          .limit(200)
+          .limit(overflowCleanupBatchSize)
           .get();
-      final pending = snap.docs.where((d) => d.id != acceptedOfferId).toList();
-      if (pending.isEmpty) break;
+      final staleDocs =
+          snap.docs.where((d) => d.id != acceptedOfferId).toList();
+      if (staleDocs.isEmpty) return;
+
       final batch = _db.batch();
-      for (final d in pending) {
+      for (final d in staleDocs) {
+        final cd = d.data();
         batch.update(d.reference, {
           'status': 'declined',
           'updatedAt': FieldValue.serverTimestamp(),
         });
+        final txn = cd['feeTransactionId'] as String? ?? '';
+        if (cd['feePaid'] == true && txn.isNotEmpty) {
+          refundTxnsOut.add(txn);
+        }
       }
       await batch.commit();
-      if (pending.length < 200) break;
+      if (staleDocs.length < overflowCleanupBatchSize) return;
     }
+
+    throw const OfferValidationException(
+      'Deal accepted and item reserved, but too many competing offers exceeded bounded cleanup budget; remaining stale offers are blocked by rules.',
+    );
   }
 
   @override
@@ -469,15 +482,47 @@ class FirestoreOfferRepository implements OfferRepository {
       if (!listingSnap.exists) {
         throw const OfferValidationException('Listing no longer exists');
       }
-      if (listingSnap.data()?['sellerId'] != sellerUid) {
-        throw const OfferValidationException('Only the seller can release this listing');
+      final liveData = listingSnap.data() ?? const <String, dynamic>{};
+      if (liveData['sellerId'] != sellerUid) {
+        throw const OfferValidationException(
+          'Only the seller can release this listing',
+        );
       }
-      for (final doc in acceptedOffers.docs) {
-        tx.update(doc.reference, {
-          'status': 'declined',
-          'updatedAt': FieldValue.serverTimestamp(),
-        });
+      if (liveData['status'] == 'sold') {
+        throw const OfferValidationException(
+          'Sold listings cannot be released back to available',
+        );
       }
+
+      // Collect candidate offer refs (query + direct reservedFor link) and read
+      // every document BEFORE writing (strict Firestore transaction invariant).
+      final refsById = <String, DocumentReference<Map<String, dynamic>>>{
+        for (final doc in acceptedOffers.docs) doc.id: doc.reference,
+      };
+      final reservedBuyer = (liveData['reservedFor'] as String? ?? '').trim();
+      if (reservedBuyer.isNotEmpty) {
+        final directId = '${listing.id}_$reservedBuyer';
+        refsById.putIfAbsent(
+          directId,
+          () => _db.collection('offers').doc(directId),
+        );
+      }
+
+      final snaps = <DocumentSnapshot<Map<String, dynamic>>>[];
+      for (final ref in refsById.values) {
+        snaps.add(await tx.get(ref));
+      }
+
+      for (final snap in snaps) {
+        if (!snap.exists) continue;
+        if (snap.data()?['status'] == 'accepted') {
+          tx.update(snap.reference, {
+            'status': 'declined',
+            'updatedAt': FieldValue.serverTimestamp(),
+          });
+        }
+      }
+
       tx.update(listingRef, {
         'status': 'available',
         'reservedFor': '',
@@ -499,34 +544,63 @@ class FirestoreOfferRepository implements OfferRepository {
         .limit(1)
         .get();
 
-    if (acceptedOffers.docs.isEmpty) {
-      await _db.collection('listings').doc(listing.id).update({
-        'status': 'sold',
-        'reservedFor': listing.reservedFor,
-        'updatedAt': FieldValue.serverTimestamp(),
-      });
-      return;
-    }
-
-    final offer = MarketOffer.fromSnapshot(acceptedOffers.docs.first);
     await _db.runTransaction((tx) async {
-      final offerRef = _db.collection('offers').doc(offer.id);
       final listingRef = _db.collection('listings').doc(listing.id);
-      final offerSnap = await tx.get(offerRef);
       final listingSnap = await tx.get(listingRef);
-      if (!listingSnap.exists || !offerSnap.exists) {
-        throw const OfferValidationException('Listing or accepted offer missing');
+      if (!listingSnap.exists) {
+        throw const OfferValidationException('Listing no longer exists');
       }
-      final alreadyCounted = listingSnap.data()?['statsCounted'] == true;
-      final sellerSnap = await tx.get(_db.collection('users').doc(sellerUid));
-      final buyerSnap =
-          await tx.get(_db.collection('users').doc(offer.buyerId));
+      final listingData = listingSnap.data() ?? const <String, dynamic>{};
+      final liveSellerId = listingData['sellerId'] as String? ?? '';
+      if (liveSellerId != sellerUid) {
+        throw const OfferValidationException(
+          'Only the seller can mark this item sold',
+        );
+      }
+      final liveStatus = listingData['status'] as String? ?? 'available';
+      if (liveStatus == 'sold') {
+        throw const OfferValidationException('This item is already marked sold');
+      }
+      final liveReservedFor = listingData['reservedFor'] as String? ?? '';
+
+      DocumentReference<Map<String, dynamic>>? offerRef;
+      if (acceptedOffers.docs.isNotEmpty) {
+        offerRef = acceptedOffers.docs.first.reference;
+      } else if (liveReservedFor.isNotEmpty) {
+        offerRef = _db.collection('offers').doc('${listing.id}_$liveReservedFor');
+      }
+
+      DocumentSnapshot<Map<String, dynamic>>? offerSnap;
+      if (offerRef != null) {
+        offerSnap = await tx.get(offerRef);
+      }
+
+      final hasAcceptedOffer = offerSnap != null &&
+          offerSnap.exists &&
+          offerSnap.data()?['status'] == 'accepted';
+
+      if (!hasAcceptedOffer) {
+        if (liveReservedFor.isNotEmpty) {
+          throw const OfferValidationException(
+            'Linked accepted offer is missing or already resolved',
+          );
+        }
+        tx.update(listingRef, {
+          'status': 'sold',
+          'reservedFor': '',
+          'updatedAt': FieldValue.serverTimestamp(),
+        });
+        return;
+      }
+
+      final offer = MarketOffer.fromSnapshot(offerSnap);
+      final alreadyCounted = listingData['statsCounted'] == true;
       final pubSellerSnap =
           await tx.get(_db.collection('public_profiles').doc(sellerUid));
       final pubBuyerSnap =
           await tx.get(_db.collection('public_profiles').doc(offer.buyerId));
 
-      tx.update(offerRef, {
+      tx.update(offerRef!, {
         'status': 'completed',
         'updatedAt': FieldValue.serverTimestamp(),
       });
@@ -538,13 +612,10 @@ class FirestoreOfferRepository implements OfferRepository {
       });
 
       if (!alreadyCounted) {
-        final prevSold = (sellerSnap.data()?['soldCount'] as num?)?.toInt() ?? 0;
-        final prevBought =
-            (buyerSnap.data()?['boughtCount'] as num?)?.toInt() ?? 0;
         tx.set(
           _db.collection('users').doc(sellerUid),
           {
-            'soldCount': prevSold + 1,
+            'soldCount': FieldValue.increment(1),
             'lastCompletedOfferId': offer.id,
           },
           SetOptions(merge: true),
@@ -552,7 +623,7 @@ class FirestoreOfferRepository implements OfferRepository {
         tx.set(
           _db.collection('users').doc(offer.buyerId),
           {
-            'boughtCount': prevBought + 1,
+            'boughtCount': FieldValue.increment(1),
             'lastCompletedOfferId': offer.id,
           },
           SetOptions(merge: true),
@@ -560,14 +631,14 @@ class FirestoreOfferRepository implements OfferRepository {
         if (pubSellerSnap.exists) {
           tx.set(
             _db.collection('public_profiles').doc(sellerUid),
-            {'soldCount': prevSold + 1},
+            {'soldCount': FieldValue.increment(1)},
             SetOptions(merge: true),
           );
         }
         if (pubBuyerSnap.exists) {
           tx.set(
             _db.collection('public_profiles').doc(offer.buyerId),
-            {'boughtCount': prevBought + 1},
+            {'boughtCount': FieldValue.increment(1)},
             SetOptions(merge: true),
           );
         }

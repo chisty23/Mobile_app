@@ -481,28 +481,65 @@ class _FakeOfferRepository implements OfferRepository {
     }
 
     if (plan.declinesCompetingOffers) {
-      for (final other in offers.values.toList()) {
-        if (other.listingId == liveListing.id &&
-            other.id != liveOffer.id &&
-            (other.status == 'pending' || other.status == 'countered')) {
-          offers[other.id] = MarketOffer(
-            id: other.id,
-            listingId: other.listingId,
-            listingTitle: other.listingTitle,
-            sellerId: other.sellerId,
-            sellerName: other.sellerName,
-            buyerId: other.buyerId,
-            buyerName: other.buyerName,
-            amount: other.amount,
-            lastUpdatedBy: other.lastUpdatedBy,
-            message: other.message,
-            status: 'declined',
-            createdAt: other.createdAt,
-            updatedAt: Timestamp.now(),
+      final competing = offers.values
+          .where((other) =>
+              other.listingId == liveListing.id &&
+              other.id != liveOffer.id &&
+              (other.status == 'pending' || other.status == 'countered'))
+          .toList();
+
+      // Declines up to FirestoreOfferRepository.maxCompetingOffersInTransaction in-tx,
+      // then handles overflow + late arrivals in bounded chunks.
+      for (final other in competing
+          .take(FirestoreOfferRepository.maxCompetingOffersInTransaction)) {
+        _markCompetingDeclined(other);
+      }
+
+      if (beforeOverflowCleanup != null) {
+        await beforeOverflowCleanup!();
+      }
+
+      var batches = 0;
+      while (true) {
+        final remaining = offers.values
+            .where((other) =>
+                other.listingId == liveListing.id &&
+                other.id != liveOffer.id &&
+                (other.status == 'pending' || other.status == 'countered'))
+            .take(FirestoreOfferRepository.overflowCleanupBatchSize)
+            .toList();
+        if (remaining.isEmpty) break;
+        batches++;
+        if (batches > FirestoreOfferRepository.maxOverflowCleanupBatches) {
+          throw const OfferValidationException(
+            'Could not finish declining all competing offers; retry reservation release or refresh offers',
           );
+        }
+        for (final other in remaining) {
+          _markCompetingDeclined(other);
         }
       }
     }
+  }
+
+  Future<void> Function()? beforeOverflowCleanup;
+
+  void _markCompetingDeclined(MarketOffer other) {
+    offers[other.id] = MarketOffer(
+      id: other.id,
+      listingId: other.listingId,
+      listingTitle: other.listingTitle,
+      sellerId: other.sellerId,
+      sellerName: other.sellerName,
+      buyerId: other.buyerId,
+      buyerName: other.buyerName,
+      amount: other.amount,
+      lastUpdatedBy: other.lastUpdatedBy,
+      message: other.message,
+      status: 'declined',
+      createdAt: other.createdAt,
+      updatedAt: Timestamp.now(),
+    );
   }
 
   @override
@@ -959,6 +996,21 @@ void main() {
       expect(countered.status, 'countered');
       expect(countered.amount, 920);
 
+      // Seller CANNOT counter their own previous counter-offer (alternating turn invariant)
+      expect(await sellerProv.counterOffer(countered, 930), isFalse);
+      expect(sellerProv.error, contains('Waiting for the buyer'));
+
+      // Buyer CANNOT reset a countered offer back to pending via validateOfferSubmission
+      expect(
+        () => MarketplaceLogic.validateOfferSubmission(
+          buyerUid: 'buyer_1',
+          listing: listing,
+          amount: 850,
+          existingOffer: countered,
+        ),
+        throwsA(isA<OfferValidationException>()),
+      );
+
       // Buyer cannot counter back; seller cannot acceptCounter
       expect(await buyerProv.counterOffer(countered, 910), isFalse);
       expect(await sellerProv.transition(countered, 'acceptCounter'), isFalse);
@@ -972,7 +1024,7 @@ void main() {
       buyerProv.dispose();
     });
 
-    test('expired offers (>48h) cannot be accepted, countered, or reopened', () async {
+    test('expired offers (>48h) block accept, counter, decline, withdraw, and reopening', () async {
       final expiredCreatedAt = Timestamp.fromDate(
         DateTime.now().subtract(const Duration(hours: 49)),
       );
@@ -996,9 +1048,15 @@ void main() {
         repository: offerRepo,
         currentUidProvider: () => 'seller_1',
       );
+      final buyerProv = OfferProvider(
+        repository: offerRepo,
+        currentUidProvider: () => 'buyer_1',
+      );
 
       expect(await sellerProv.transition(expiredOffer, 'accept'), isFalse);
       expect(sellerProv.error, contains('expired'));
+      expect(await sellerProv.transition(expiredOffer, 'decline'), isFalse);
+      expect(await buyerProv.transition(expiredOffer, 'withdraw'), isFalse);
 
       await offerRepo.markExpiredIfDue([expiredOffer], 'seller_1');
       final terminal = offerRepo.offers[expiredOffer.id]!;
@@ -1014,6 +1072,7 @@ void main() {
         throwsA(isA<OfferValidationException>()),
       );
       sellerProv.dispose();
+      buyerProv.dispose();
     });
 
     test('handover completion unlocks single verified rating and rejects duplicates', () async {
@@ -1123,6 +1182,105 @@ void main() {
       expect(listingRepo.store.first.isAvailable, isTrue);
       expect(offerRepo.offers['list_1_buyer_1']!.status, 'declined');
       sellProv.dispose();
+    });
+
+    test('buyer withdrawing an accepted reservation declines own offer and frees listing', () async {
+      final sellerOfferProv = OfferProvider(
+        repository: offerRepo,
+        currentUidProvider: () => 'seller_1',
+      );
+      final buyerOfferProv = OfferProvider(
+        repository: offerRepo,
+        currentUidProvider: () => 'buyer_1',
+      );
+
+      await offerRepo.submitOffer(
+        listing: listing,
+        buyerUid: 'buyer_1',
+        buyerFallbackName: 'Bob',
+        amount: 950,
+        message: 'Ready',
+      );
+      expect(
+        await sellerOfferProv.transition(
+          offerRepo.offers['list_1_buyer_1']!,
+          'accept',
+        ),
+        isTrue,
+      );
+      expect(listingRepo.store.first.isReserved, isTrue);
+
+      expect(
+        await buyerOfferProv.transition(
+          offerRepo.offers['list_1_buyer_1']!,
+          'withdraw',
+        ),
+        isTrue,
+      );
+      expect(offerRepo.offers['list_1_buyer_1']!.status, 'withdrawn');
+      expect(listingRepo.store.first.isAvailable, isTrue);
+      expect(listingRepo.store.first.reservedFor, '');
+
+      sellerOfferProv.dispose();
+      buyerOfferProv.dispose();
+    });
+
+    test('bounded cleanup declines >450 competing offers and late-arriving concurrent offers', () async {
+      final sellerOfferProv = OfferProvider(
+        repository: offerRepo,
+        currentUidProvider: () => 'seller_1',
+      );
+
+      await offerRepo.submitOffer(
+        listing: listing,
+        buyerUid: 'winner',
+        buyerFallbackName: 'Winner',
+        amount: 1000,
+        message: 'Asking price',
+      );
+      const totalCompeting = 460;
+      for (int i = 0; i < totalCompeting; i++) {
+        await offerRepo.submitOffer(
+          listing: listing,
+          buyerUid: 'comp_$i',
+          buyerFallbackName: 'Buyer $i',
+          amount: 800,
+          message: 'Offer $i',
+        );
+      }
+
+      // Inject a late-arriving offer after in-tx snapshot capture
+      offerRepo.beforeOverflowCleanup = () async {
+        offerRepo.offers['list_1_late_buyer'] = MarketOffer(
+          id: 'list_1_late_buyer',
+          listingId: listing.id,
+          listingTitle: listing.title,
+          sellerId: listing.sellerId,
+          sellerName: listing.sellerName,
+          buyerId: 'late_buyer',
+          buyerName: 'Late Buyer',
+          amount: 910,
+          lastUpdatedBy: 'late_buyer',
+          message: 'Concurrent late bid',
+          status: 'pending',
+          createdAt: Timestamp.now(),
+        );
+      };
+
+      expect(
+        await sellerOfferProv.transition(
+          offerRepo.offers['list_1_winner']!,
+          'accept',
+        ),
+        isTrue,
+      );
+      expect(offerRepo.offers['list_1_winner']!.status, 'accepted');
+      expect(listingRepo.store.first.reservedFor, 'winner');
+      for (int i = 0; i < totalCompeting; i++) {
+        expect(offerRepo.offers['list_1_comp_$i']!.status, 'declined');
+      }
+      expect(offerRepo.offers['list_1_late_buyer']!.status, 'declined');
+      sellerOfferProv.dispose();
     });
   });
 

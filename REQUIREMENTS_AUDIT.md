@@ -100,3 +100,14 @@
    - Firebase Emulator Suite security-rule tests (`firestore.rules`) once OpenJDK is available.
 9. **Local Build & Handoff (Phase 3 & 4):**
    - Run `flutter pub get`, `flutter analyze`, `flutter test`, Emulator tests, and local `flutter run -d chrome` verification; prepare `IMPLEMENTATION_CHANGELOG.md` and `TESTING_REPORT.md`; provide exact local run command, manual checklist, and known limitations; **STOP and wait for user approval before Phases 5 & 6 (GitHub push & Firebase deploy).**
+
+
+---
+
+## 4. Post-Audit Resolution & Final Release Status (`main`)
+
+All critical items raised in the initial audit above and in the subsequent Final Release security pass have been resolved on `main` under the Firebase Spark-only architecture:
+
+- **Security Rules & Production Config:** Hardened `firestore.rules` (and synced `firestore.rules.production` identically) with owner-only `/users/{uid}` reads, strict field/state whitelists on `/listings/{listingId}` and `/offers/{offerId}`, alternating `lastUpdatedBy` counter turns, server-time `request.time` 48-hour expiry checks, verified handover/rating stat proof, and `let`-scoped helpers staying below Firestore's 1,000-expression runtime evaluation cap.
+- **Repositories & Transactions:** Added `lib/repositories/*` + `MarketplaceLogic` eliminating direct UI Firebase access, implemented true `limit(30)` + `startAfterDocument` cursor pagination, Option B `https://` image URLs + initials/category fallbacks (zero Cloud Storage / Blaze), atomic reservation/release/completion (`FieldValue.increment` eliminating cross-user `/users` PII reads), bounded 450 in-tx + 30x300 post-tx competing offer cleanup, and sandbox-only (`feesEnabled: false`) fee configuration.
+- **Verification:** Temurin OpenJDK 21 LTS (`21.0.13.1+2`) is active locally; full Flutter analyze/tests, Firestore Emulator security rules tests, release web build, GitHub push, Firebase Spark deploy (`firestore,hosting`), and live site checks are recorded in [TESTING_REPORT.md](TESTING_REPORT.md).

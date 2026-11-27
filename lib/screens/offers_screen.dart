@@ -957,17 +957,18 @@ class _OffersScreenState extends State<OffersScreen>
                         backgroundColor: const Color(0xFF24A889),
                       ),
                     ),
-                  if (received)
+                  if (received &&
+                      (offer.status == 'pending' ||
+                          (offer.lastUpdatedBy.isNotEmpty &&
+                              offer.lastUpdatedBy != uid)))
                     OutlinedButton.icon(
                       onPressed: provider.busy
                           ? null
                           : () => _showCounter(context, offer, provider),
                       icon: const Icon(Icons.swap_horiz_rounded, size: 16),
-                      label: Text(
-                        offer.status == 'countered' ? 'Re-Counter' : 'Counter',
-                      ),
+                      label: const Text('Counter'),
                     )
-                  else
+                  else if (!received)
                     OutlinedButton(
                       onPressed: provider.busy
                           ? null
