@@ -1,4 +1,3 @@
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
@@ -37,7 +36,7 @@ class _OffersScreenState extends State<OffersScreen>
   }
 
   bool _matchesFilter(MarketOffer offer, {required bool received}) {
-    final uid = FirebaseAuth.instance.currentUser?.uid ?? '';
+    final uid = context.read<AuthProvider>().uid ?? '';
     switch (_stageFilter) {
       case 'action':
         if (offer.isExpired) return false;
@@ -477,7 +476,7 @@ class _OffersScreenState extends State<OffersScreen>
     required OfferProvider provider,
     required bool isDark,
   }) {
-    final uid = FirebaseAuth.instance.currentUser?.uid ?? '';
+    final uid = context.watch<AuthProvider>().uid ?? '';
     final effectiveStatus = offer.isExpired ? 'expired' : offer.status;
     final bool isMyTurn;
     if (offer.status == 'countered') {
@@ -493,9 +492,7 @@ class _OffersScreenState extends State<OffersScreen>
     final chatProv = context.read<ChatProvider>();
     final dir = context.watch<ProfileDirectoryProvider>();
     final peerId = received ? offer.buyerId : offer.sellerId;
-    final peerFallbackName = received
-        ? offer.buyerName
-        : (offer.sellerName.isNotEmpty ? offer.sellerName : 'Seller');
+    final peerFallbackName = received ? offer.buyerName : offer.sellerName;
     final peerName = dir.nameFor(peerId, fallback: peerFallbackName);
     final peerPhoto = dir.photoFor(
       peerId,
@@ -883,9 +880,7 @@ class _OffersScreenState extends State<OffersScreen>
                 onPressed: () {
                   final resolvedSellerName = dir.nameFor(
                     offer.sellerId,
-                    fallback: offer.sellerName.isNotEmpty
-                        ? offer.sellerName
-                        : 'Seller',
+                    fallback: offer.sellerName,
                   );
                   Navigator.push(
                     context,
@@ -962,15 +957,35 @@ class _OffersScreenState extends State<OffersScreen>
                         backgroundColor: const Color(0xFF24A889),
                       ),
                     ),
-                  OutlinedButton.icon(
-                    onPressed: provider.busy
-                        ? null
-                        : () => _showCounter(context, offer, provider),
-                    icon: const Icon(Icons.swap_horiz_rounded, size: 16),
-                    label: Text(
-                      offer.status == 'countered' ? 'Re-Counter' : 'Counter',
+                  if (received)
+                    OutlinedButton.icon(
+                      onPressed: provider.busy
+                          ? null
+                          : () => _showCounter(context, offer, provider),
+                      icon: const Icon(Icons.swap_horiz_rounded, size: 16),
+                      label: Text(
+                        offer.status == 'countered' ? 'Re-Counter' : 'Counter',
+                      ),
+                    )
+                  else
+                    OutlinedButton(
+                      onPressed: provider.busy
+                          ? null
+                          : () async {
+                              final ok = await provider.transition(offer, 'declineCounter');
+                              _snack(
+                                messenger,
+                                ok,
+                                ok
+                                    ? 'Counter offer declined.'
+                                    : provider.error,
+                              );
+                            },
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: const Color(0xFFD94B64),
+                      ),
+                      child: const Text('Decline Counter'),
                     ),
-                  ),
                 ] else
                   Container(
                     padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
@@ -1092,21 +1107,28 @@ class _OffersScreenState extends State<OffersScreen>
                       ],
                     ),
                   ),
-              ] else if (offer.isExpired && !received) ...[
-                TextButton(
-                  onPressed: provider.busy
-                      ? null
-                      : () async {
-                          final ok = await provider.transition(offer, 'withdraw');
-                          _snack(
-                            messenger,
-                            ok,
-                            ok
-                                ? 'Expired offer cleared & fee refunded'
-                                : provider.error,
-                          );
-                        },
-                  child: const Text('Clear & Refund'),
+              ] else if (offer.isExpired) ...[
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFD94B64).withValues(alpha: 0.10),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: const Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.schedule_outlined, size: 14, color: Color(0xFFD94B64)),
+                      SizedBox(width: 4),
+                      Text(
+                        '48h response window expired',
+                        style: TextStyle(
+                          fontSize: 11.5,
+                          fontWeight: FontWeight.w700,
+                          color: Color(0xFFD94B64),
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
               ],
             ],

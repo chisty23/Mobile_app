@@ -1,4 +1,3 @@
-import 'package:firebase_auth/firebase_auth.dart' hide AuthProvider;
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -65,6 +64,7 @@ class SellerProfileSheet extends StatelessWidget {
                 final activeListings = (data['listings'] as List<Listing>?) ?? const [];
 
                 final dept = (profile['department'] as String?) ?? '';
+                final hostel = (profile['hostel'] as String?) ?? '';
                 final photoUrl = (profile['photoUrl'] as String?) ?? '';
                 final bio = (profile['bio'] as String?) ?? '';
                 final location = (profile['location'] as String?) ?? '';
@@ -76,7 +76,10 @@ class SellerProfileSheet extends StatelessWidget {
                 final avgRating = ratingCount == 0 ? 0.0 : ratingSum / ratingCount;
                 final isVerifiedStudent = profile['verifiedStudent'] == true;
                 final phoneVerified = profile['phoneVerified'] == true;
-                final currentUid = FirebaseAuth.instance.currentUser?.uid;
+                final currentUid = context.watch<AuthProvider>().uid;
+                final resolvedSellerName = sellerName.trim().isNotEmpty
+                    ? sellerName.trim()
+                    : AppFormatters.unknownUserName;
 
                 return ListView(
                   controller: scrollController,
@@ -97,7 +100,7 @@ class SellerProfileSheet extends StatelessWidget {
                       children: [
                         UserAvatar(
                           uid: sellerId,
-                          name: sellerName,
+                          name: resolvedSellerName,
                           photoUrl: photoUrl,
                           radius: 32,
                           showBorder: true,
@@ -112,7 +115,7 @@ class SellerProfileSheet extends StatelessWidget {
                                 children: [
                                   Flexible(
                                     child: Text(
-                                      sellerName,
+                                      resolvedSellerName,
                                       style: AppTypography.display(size: 22),
                                     ),
                                   ),
@@ -152,7 +155,9 @@ class SellerProfileSheet extends StatelessWidget {
                                     ),
                                   ],
                                 ),
-                              if (location.isNotEmpty || meetupSpot.isNotEmpty)
+                              if (location.isNotEmpty ||
+                                  hostel.isNotEmpty ||
+                                  meetupSpot.isNotEmpty)
                                 Padding(
                                   padding: const EdgeInsets.only(top: 2),
                                   child: Row(
@@ -166,6 +171,7 @@ class SellerProfileSheet extends StatelessWidget {
                                       Flexible(
                                         child: Text(
                                           [
+                                            if (hostel.isNotEmpty) hostel,
                                             if (location.isNotEmpty) location,
                                             if (meetupSpot.isNotEmpty) 'Meetup: $meetupSpot',
                                           ].join(' · '),

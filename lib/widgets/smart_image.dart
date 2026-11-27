@@ -286,3 +286,54 @@ class _FullscreenPhotoDialogState extends State<_FullscreenPhotoDialog> {
     );
   }
 }
+
+/// Shared category gradient and icon artwork used when a listing has no valid
+/// external HTTPS image or fails to load.
+class ListingCategoryArtwork {
+  static LinearGradient gradient(String category) {
+    const palettes = {
+      'Books': [Color(0xFF4E5A58), Color(0xFF7C8986)],
+      'Electronics': [Color(0xFF667B72), Color(0xFF91A49D)],
+      'Fashion': [Color(0xFF9A815A), Color(0xFFBEA984)],
+      'Sports': [Color(0xFF4A5565), Color(0xFF818B99)],
+      'Furniture': [Color(0xFF806D57), Color(0xFFA99980)],
+      'Other': [Color(0xFF697184), Color(0xFFA1A7B5)],
+    };
+    final colors = palettes[category] ?? palettes['Other']!;
+    return LinearGradient(
+      begin: Alignment.topLeft,
+      end: Alignment.bottomRight,
+      colors: colors,
+    );
+  }
+
+  static IconData iconData(String category) {
+    switch (category) {
+      case 'Books':
+        return Icons.menu_book_rounded;
+      case 'Electronics':
+        return Icons.devices_other_rounded;
+      case 'Fashion':
+        return Icons.checkroom_rounded;
+      case 'Sports':
+        return Icons.sports_basketball_rounded;
+      case 'Furniture':
+        return Icons.chair_rounded;
+      default:
+        return Icons.category_rounded;
+    }
+  }
+
+  static Widget fallback(String category, {double iconSize = 52}) {
+    return Container(
+      decoration: BoxDecoration(gradient: gradient(category)),
+      child: Center(
+        child: Icon(
+          iconData(category),
+          size: iconSize,
+          color: Colors.white.withValues(alpha: 0.92),
+        ),
+      ),
+    );
+  }
+}

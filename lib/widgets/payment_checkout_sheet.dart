@@ -35,7 +35,11 @@ class PaymentCheckoutSheet extends StatefulWidget {
     required int amount,
     required String referenceId,
     required String referenceTitle,
-  }) {
+  }) async {
+    final feesEnabled = context.read<AdminProvider>().feeSettings.feesEnabled;
+    if (!feesEnabled || amount <= 0) {
+      return null;
+    }
     return showModalBottomSheet<PlatformPaymentRecord>(
       context: context,
       isScrollControlled: true,
@@ -235,7 +239,7 @@ class _PaymentCheckoutSheetState extends State<PaymentCheckoutSheet> {
                                     Icon(Icons.verified_user_rounded, size: 12, color: Color(0xFF24A889)),
                                     SizedBox(width: 4),
                                     Text(
-                                      'SERVER SECURED',
+                                      'SANDBOX MODE (FREE)',
                                       style: TextStyle(
                                         color: Color(0xFF24A889),
                                         fontSize: 10,
@@ -467,7 +471,7 @@ class _PaymentCheckoutSheetState extends State<PaymentCheckoutSheet> {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
-                            'SSLCommerz Session Ready (${_pendingTxnId ?? ''})',
+                            'Sandbox Payment Recorded (${_pendingTxnId ?? ''})',
                             style: const TextStyle(
                               fontWeight: FontWeight.w800,
                               fontSize: 13,

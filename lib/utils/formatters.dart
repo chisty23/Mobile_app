@@ -1,6 +1,29 @@
-/// Shared formatting helpers for currency, dates, and campus locations.
+/// Shared formatting helpers for currency, dates, URLs, and campus locations.
 class AppFormatters {
   AppFormatters._();
+
+  static const String unknownUserName = 'Unknown user';
+
+  /// Validates an externally hosted HTTPS image URL (or rejects non-HTTPS/data URIs).
+  static bool isValidHttpsImageUrl(String input) {
+    final trimmed = input.trim();
+    if (trimmed.isEmpty) return false;
+    final uri = Uri.tryParse(trimmed);
+    if (uri == null) return false;
+    return uri.scheme.toLowerCase() == 'https' &&
+        uri.host.isNotEmpty &&
+        !trimmed.contains(RegExp(r'\s'));
+  }
+
+  /// Form validator for optional external HTTPS image URL inputs.
+  static String? validateOptionalHttpsImageUrl(String? input) {
+    final trimmed = input?.trim() ?? '';
+    if (trimmed.isEmpty) return null;
+    if (!isValidHttpsImageUrl(trimmed)) {
+      return 'Enter a valid external https:// image URL (no spaces or embedded files)';
+    }
+    return null;
+  }
 
   static const List<String> campusLocations = [
     'All Locations',

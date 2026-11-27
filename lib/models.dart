@@ -1,11 +1,19 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 
+import 'utils/formatters.dart';
+
+String _nonEmptyOr(dynamic raw, String fallback) {
+  final text = raw?.toString().trim() ?? '';
+  return text.isNotEmpty ? text : fallback;
+}
+
 class PublicUserProfile {
   final String uid;
   final String name;
   final String photoUrl;
   final String bio;
   final String department;
+  final String hostel;
   final String location;
   final String batchYear;
   final String meetupSpot;
@@ -21,10 +29,11 @@ class PublicUserProfile {
 
   const PublicUserProfile({
     required this.uid,
-    this.name = 'PassItOn Member',
+    this.name = AppFormatters.unknownUserName,
     this.photoUrl = '',
     this.bio = '',
     this.department = '',
+    this.hostel = '',
     this.location = '',
     this.batchYear = '',
     this.meetupSpot = '',
@@ -43,11 +52,11 @@ class PublicUserProfile {
 
   int get completionPercent {
     var score = 0;
-    if (name.trim().isNotEmpty) score += 20;
+    if (name.trim().isNotEmpty && name != AppFormatters.unknownUserName) score += 20;
     if (photoUrl.trim().isNotEmpty) score += 25;
     if (bio.trim().isNotEmpty) score += 20;
     if (department.trim().isNotEmpty) score += 15;
-    if (location.trim().isNotEmpty) score += 10;
+    if (location.trim().isNotEmpty || hostel.trim().isNotEmpty) score += 10;
     if (meetupSpot.trim().isNotEmpty || batchYear.trim().isNotEmpty) score += 10;
     return score.clamp(0, 100);
   }
@@ -56,12 +65,11 @@ class PublicUserProfile {
     final data = d ?? const <String, dynamic>{};
     return PublicUserProfile(
       uid: uid,
-      name: (data['name'] as String?)?.trim().isNotEmpty == true
-          ? (data['name'] as String).trim()
-          : 'PassItOn Member',
+      name: _nonEmptyOr(data['name'], AppFormatters.unknownUserName),
       photoUrl: (data['photoUrl'] as String?) ?? '',
       bio: (data['bio'] as String?) ?? '',
       department: (data['department'] as String?) ?? '',
+      hostel: (data['hostel'] as String?) ?? '',
       location: (data['location'] as String?) ?? '',
       batchYear: (data['batchYear'] as String?) ?? '',
       meetupSpot: (data['meetupSpot'] as String?) ?? '',
@@ -116,7 +124,7 @@ class ListingComment {
       id: doc.id,
       listingId: (d['listingId'] as String?) ?? listingId,
       authorId: d['authorId'] ?? '',
-      authorName: d['authorName'] ?? 'Campus Member',
+      authorName: _nonEmptyOr(d['authorName'], AppFormatters.unknownUserName),
       authorPhotoUrl: d['authorPhotoUrl'] ?? '',
       text: d['text'] ?? '',
       isSeller: d['isSeller'] == true,
@@ -130,6 +138,7 @@ class ListingComment {
 class Listing {
   final String id;
   final String title;
+  final List<String> keywords;
   final String description;
   final String category;
   final String condition;
@@ -152,6 +161,7 @@ class Listing {
   Listing({
     required this.id,
     required this.title,
+    this.keywords = const [],
     required this.description,
     required this.category,
     required this.condition,
@@ -172,8 +182,7 @@ class Listing {
     this.statsCounted = false,
   });
 
-  factory Listing.fromSnapshot(DocumentSnapshot<Map<String, dynamic>> doc) {
-    final d = doc.data() ?? {};
+  factory Listing.fromMap(String id, Map<String, dynamic> d) {
     final primaryUrl = (d['imageUrl'] as String?) ?? '';
     final rawImages = (d['images'] as List<dynamic>?)
             ?.map((e) => e.toString())
@@ -183,10 +192,23 @@ class Listing {
     final mergedImages = rawImages.isNotEmpty
         ? rawImages
         : (primaryUrl.trim().isNotEmpty ? [primaryUrl.trim()] : <String>[]);
+    final title = (d['title'] as String?) ?? '';
+    final rawKeywords = (d['keywords'] as List<dynamic>?)
+            ?.map((e) => e.toString().trim().toLowerCase())
+            .where((e) => e.isNotEmpty)
+            .toList() ??
+        title
+            .toLowerCase()
+            .replaceAll(RegExp(r'[^\w\s]'), ' ')
+            .split(RegExp(r'\s+'))
+            .where((e) => e.isNotEmpty)
+            .toSet()
+            .toList();
 
     return Listing(
-      id: doc.id,
-      title: d['title'] ?? '',
+      id: id,
+      title: title,
+      keywords: rawKeywords,
       description: d['description'] ?? '',
       category: d['category'] ?? 'Other',
       condition: d['condition'] ?? 'used',
@@ -196,7 +218,7 @@ class Listing {
       imageUrl: mergedImages.isNotEmpty ? mergedImages.first : primaryUrl,
       images: mergedImages,
       sellerId: d['sellerId'] ?? '',
-      sellerName: d['sellerName'] ?? 'Unknown user',
+      sellerName: _nonEmptyOr(d['sellerName'], AppFormatters.unknownUserName),
       sellerPhotoUrl: d['sellerPhotoUrl'] ?? '',
       status: d['status'] ?? 'available',
       reservedFor: d['reservedFor'] ?? '',
@@ -208,6 +230,10 @@ class Listing {
     );
   }
 
+  factory Listing.fromSnapshot(DocumentSnapshot<Map<String, dynamic>> doc) {
+    return Listing.fromMap(doc.id, doc.data() ?? const <String, dynamic>{});
+  }
+
   List<String> get galleryImages => images.isNotEmpty
       ? images
       : (imageUrl.trim().isNotEmpty ? [imageUrl.trim()] : const []);
@@ -215,6 +241,9 @@ class Listing {
   bool get isAvailable => status == 'available';
   bool get isReserved => status == 'reserved';
   bool get isSold => status == 'sold';
+  bool get isDeleted => status == 'deleted';
+  bool get isNoLongerAvailable =>
+      status == 'sold' || status == 'deleted' || status == 'suspended';
   bool get isNegotiable => negotiable;
 }
 
@@ -285,8 +314,7 @@ class MarketOffer {
     this.feeTransactionId = '',
   });
 
-  factory MarketOffer.fromSnapshot(DocumentSnapshot<Map<String, dynamic>> doc) {
-    final d = doc.data() ?? {};
+  factory MarketOffer.fromMap(String id, Map<String, dynamic> d) {
     final rawHistory = (d['history'] as List<dynamic>?) ?? const [];
     final parsedHistory = rawHistory
         .whereType<Map<String, dynamic>>()
@@ -294,14 +322,14 @@ class MarketOffer {
         .toList();
 
     return MarketOffer(
-      id: doc.id,
+      id: id,
       listingId: d['listingId'] ?? '',
       listingTitle: d['listingTitle'] ?? '',
       sellerId: d['sellerId'] ?? '',
-      sellerName: d['sellerName'] ?? '',
+      sellerName: _nonEmptyOr(d['sellerName'], AppFormatters.unknownUserName),
       sellerPhotoUrl: d['sellerPhotoUrl'] ?? '',
       buyerId: d['buyerId'] ?? '',
-      buyerName: d['buyerName'] ?? 'Unknown user',
+      buyerName: _nonEmptyOr(d['buyerName'], AppFormatters.unknownUserName),
       buyerPhotoUrl: d['buyerPhotoUrl'] ?? '',
       amount: (d['amount'] as num?)?.toInt() ?? 0,
       lastUpdatedBy: d['lastUpdatedBy'] ?? '',
@@ -318,10 +346,30 @@ class MarketOffer {
     );
   }
 
-  bool get isExpired =>
-      createdAt != null &&
-      DateTime.now().difference(createdAt!.toDate()).inHours >= 48 &&
-      (status == 'pending' || status == 'countered');
+  factory MarketOffer.fromSnapshot(DocumentSnapshot<Map<String, dynamic>> doc) {
+    return MarketOffer.fromMap(doc.id, doc.data() ?? const <String, dynamic>{});
+  }
+
+  bool isExpiredAt([DateTime? referenceTime]) {
+    if (status == 'expired') return true;
+    if (status != 'pending' && status != 'countered') return false;
+    if (createdAt == null) return false;
+    final now = referenceTime ?? DateTime.now();
+    return now.difference(createdAt!.toDate()).inHours >= 48;
+  }
+
+  bool get isExpired => isExpiredAt();
+
+  String get effectiveStatus => isExpired ? 'expired' : status;
+
+  bool get isActiveOffer =>
+      !isExpired && (status == 'pending' || status == 'countered');
+
+  bool get isTerminal =>
+      status == 'declined' ||
+      status == 'withdrawn' ||
+      status == 'completed' ||
+      isExpired;
 }
 
 class ChatMessage {
@@ -346,7 +394,7 @@ class ChatMessage {
     return ChatMessage(
       id: doc.id,
       senderId: d['senderId'] ?? '',
-      senderName: d['senderName'] ?? 'Member',
+      senderName: _nonEmptyOr(d['senderName'], AppFormatters.unknownUserName),
       senderPhotoUrl: d['senderPhotoUrl'] ?? '',
       text: d['text'] ?? '',
       createdAt: d['createdAt'] is Timestamp
@@ -368,6 +416,8 @@ class ChatThread {
   final String sellerName;
   final String sellerPhotoUrl;
   final String lastMessage;
+  final String lastMessageSenderId;
+  final Map<String, DateTime> lastReadAtBy;
   final DateTime updatedAt;
 
   ChatThread({
@@ -382,23 +432,47 @@ class ChatThread {
     required this.sellerName,
     this.sellerPhotoUrl = '',
     required this.lastMessage,
+    this.lastMessageSenderId = '',
+    this.lastReadAtBy = const {},
     required this.updatedAt,
   });
 
+  bool isUnreadFor(String uid) {
+    if (uid.isEmpty || lastMessage.trim().isEmpty) return false;
+    if (lastMessageSenderId.isNotEmpty && lastMessageSenderId == uid) {
+      return false;
+    }
+    final readAt = lastReadAtBy[uid];
+    if (readAt == null) return lastMessageSenderId.isNotEmpty;
+    return updatedAt.isAfter(readAt);
+  }
+
   factory ChatThread.fromSnapshot(DocumentSnapshot<Map<String, dynamic>> doc) {
     final d = doc.data() ?? {};
+    final rawRead = d['lastReadAtBy'];
+    final parsedRead = <String, DateTime>{};
+    if (rawRead is Map) {
+      for (final entry in rawRead.entries) {
+        final v = entry.value;
+        if (v is Timestamp) {
+          parsedRead[entry.key.toString()] = v.toDate();
+        }
+      }
+    }
     return ChatThread(
       id: doc.id,
       listingId: d['listingId'] ?? '',
       listingTitle: d['listingTitle'] ?? '',
       listingPrice: (d['listingPrice'] as num?)?.toInt() ?? 0,
       buyerId: d['buyerId'] ?? '',
-      buyerName: d['buyerName'] ?? 'Buyer',
+      buyerName: _nonEmptyOr(d['buyerName'], AppFormatters.unknownUserName),
       buyerPhotoUrl: d['buyerPhotoUrl'] ?? '',
       sellerId: d['sellerId'] ?? '',
-      sellerName: d['sellerName'] ?? 'Seller',
+      sellerName: _nonEmptyOr(d['sellerName'], AppFormatters.unknownUserName),
       sellerPhotoUrl: d['sellerPhotoUrl'] ?? '',
       lastMessage: d['lastMessage'] ?? '',
+      lastMessageSenderId: (d['lastMessageSenderId'] as String?) ?? '',
+      lastReadAtBy: parsedRead,
       updatedAt: d['updatedAt'] is Timestamp
           ? (d['updatedAt'] as Timestamp).toDate()
           : DateTime.now(),
@@ -433,7 +507,7 @@ class SellerReview {
       id: doc.id,
       sellerId: d['sellerId'] ?? '',
       buyerId: d['buyerId'] ?? '',
-      buyerName: d['buyerName'] ?? 'Verified Buyer',
+      buyerName: _nonEmptyOr(d['buyerName'], AppFormatters.unknownUserName),
       buyerPhotoUrl: d['buyerPhotoUrl'] ?? '',
       stars: (d['stars'] as num?)?.toInt() ?? 5,
       comment: d['comment'] ?? '',

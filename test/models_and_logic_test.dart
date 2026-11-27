@@ -1,5 +1,3 @@
-import 'dart:convert';
-
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -10,7 +8,6 @@ import 'package:pass_it_on/providers/app_providers.dart';
 import 'package:pass_it_on/services/backend_api.dart';
 import 'package:pass_it_on/utils/app_typography.dart';
 import 'package:pass_it_on/utils/formatters.dart';
-import 'package:pass_it_on/utils/storage_uploader.dart';
 
 void main() {
   group('Listing Model Tests', () {
@@ -311,42 +308,32 @@ void main() {
     });
   });
 
-  group('BackendApi & StorageUploader Tests', () {
-    test('BackendApi sends Bearer auth token and parses server payment', () async {
-      String? capturedAuth;
-      String? capturedPath;
-      final mockClient = MockClient((request) async {
-        capturedAuth = request.headers['Authorization'];
-        capturedPath = request.url.path;
-        return http.Response(
-          jsonEncode({
-            'mode': 'sandbox_completed',
-            'payment': {
-              'id': 'pay_srv_1',
-              'transactionId': 'PIO-ABC123',
-              'amount': 50,
-            },
-          }),
-          200,
-        );
-      });
-
-      final api = BackendApi(
-        client: mockClient,
-        baseUrl: 'https://example.com/api',
-        tokenProvider: () async => 'test_jwt_token',
+  group('Image URL Validation, Fonts & BackendApi Reference Tests', () {
+    test('Option B HTTPS image URL validation accepts HTTPS and rejects non-HTTPS/base64', () {
+      expect(
+        AppFormatters.validateOptionalHttpsImageUrl('https://cdn.example.com/photo.jpg'),
+        isNull,
       );
-
-      final res = await api.initiatePayment(
-        type: 'buyer_order_fee',
-        method: 'bKash',
-        referenceId: 'listing_1',
-        referenceTitle: 'Scientific Calculator',
+      expect(
+        AppFormatters.validateOptionalHttpsImageUrl(''),
+        isNull,
       );
-
-      expect(capturedAuth, 'Bearer test_jwt_token');
-      expect(capturedPath, '/api/payments/initiate');
-      expect(res['mode'], 'sandbox_completed');
+      expect(
+        AppFormatters.validateOptionalHttpsImageUrl('http://insecure.example.com/photo.jpg'),
+        isNotNull,
+      );
+      expect(
+        AppFormatters.validateOptionalHttpsImageUrl('data:image/png;base64,AAAA'),
+        isNotNull,
+      );
+      expect(
+        AppFormatters.isValidHttpsImageUrl('https://images.example.org/a/b.webp'),
+        isTrue,
+      );
+      expect(
+        AppFormatters.isValidHttpsImageUrl('ftp://example.com/a.jpg'),
+        isFalse,
+      );
     });
 
     test('BackendApi reports isEndpointUnavailable on HTTP 404', () async {
@@ -369,38 +356,6 @@ void main() {
           ),
         ),
       );
-    });
-
-    test('StorageUploader uploads Data URI and builds tokenized download URL',
-        () async {
-      final mockClient = MockClient((request) async {
-        expect(request.headers['Authorization'], 'Bearer id_token_123');
-        expect(request.headers['Content-Type'], 'image/jpeg');
-        return http.Response(
-          jsonEncode({'downloadTokens': 'tok_9988,tok_backup'}),
-          200,
-        );
-      });
-
-      final uploader = StorageUploader(
-        client: mockClient,
-        bucket: 'pass-it-on-2f422.firebasestorage.app',
-      );
-
-      final dataUri = 'data:image/jpeg;base64,${base64Encode([1, 2, 3, 4])}';
-      final result = await uploader.uploadListingImages(
-        images: [dataUri, 'https://cdn.example.com/existing.jpg'],
-        uid: 'user_abc',
-        idToken: 'id_token_123',
-      );
-
-      expect(result.length, 2);
-      expect(
-        result.first,
-        contains('https://firebasestorage.googleapis.com/v0/b/pass-it-on-2f422.firebasestorage.app/o/'),
-      );
-      expect(result.first, contains('token=tok_9988'));
-      expect(result.last, 'https://cdn.example.com/existing.jpg');
     });
 
     test('AppTypography defines authentic Italian font families', () {
@@ -463,26 +418,7 @@ void main() {
       expect(dir.nameFor('u2'), 'Nusrat Jahan');
     });
 
-    test('StorageUploader uploads avatar under profiles/{uid}/', () async {
-      Uri? capturedUri;
-      final mockClient = MockClient((request) async {
-        capturedUri = request.url;
-        return http.Response(jsonEncode({'downloadTokens': 'tok_av_1'}), 200);
-      });
-
-      final uploader = StorageUploader(client: mockClient);
-      final dataUri = 'data:image/jpeg;base64,${base64Encode([5, 6, 7, 8])}';
-      final url = await uploader.uploadAvatarImage(
-        rawImage: dataUri,
-        uid: 'u_avatar',
-        idToken: 'tok_user',
-      );
-
-      expect(capturedUri.toString(), contains('profiles%2Fu_avatar%2Favatar_'));
-      expect(url, contains('token=tok_av_1'));
-    });
-
-    test('ListingComment and avatar fields serialize properly', () {
+    test('ListingComment and Unknown user fallback serialize properly', () {
       final comment = ListingComment(
         id: 'c1',
         listingId: 'l1',
@@ -495,6 +431,14 @@ void main() {
       );
       expect(comment.authorPhotoUrl, 'https://example.com/sadia.jpg');
       expect(comment.isSeller, isFalse);
+
+      final blankSeller = Listing.fromMap('l_blank', {
+        'title': 'Desk Lamp',
+        'price': 350,
+        'sellerId': 'u_missing',
+        'sellerName': '',
+      });
+      expect(blankSeller.sellerName, AppFormatters.unknownUserName);
     });
   });
 }

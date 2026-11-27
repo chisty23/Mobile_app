@@ -1,5 +1,3 @@
-import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_auth/firebase_auth.dart' hide AuthProvider;
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
@@ -41,6 +39,75 @@ class PassItOnApp extends StatelessWidget {
       ],
       child: Consumer2<ThemeProvider, AuthProvider>(
         builder: (context, themeProvider, authProvider, _) {
+          Widget homeScreen;
+          if (authProvider.initializing) {
+            homeScreen = const Scaffold(
+              backgroundColor: Color(0xFFF3F1EC),
+              body: Center(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    CircularProgressIndicator(color: Color(0xFF252832)),
+                    SizedBox(height: 16),
+                    Text(
+                      'Loading PassItOn...',
+                      style: TextStyle(
+                        color: Color(0xFF252832),
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          } else if (!authProvider.isSignedIn) {
+            homeScreen =
+                authProvider.guestMode ? const RootScreen() : const AuthScreen();
+          } else if (authProvider.isCurrentUserBanned) {
+            homeScreen = Scaffold(
+              body: Center(
+                child: Padding(
+                  padding: const EdgeInsets.all(32),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(
+                        Icons.block_rounded,
+                        size: 64,
+                        color: Color(0xFFD94B64),
+                      ),
+                      const SizedBox(height: 16),
+                      const Text(
+                        'Account Suspended',
+                        style: TextStyle(
+                          fontSize: 22,
+                          fontWeight: FontWeight.w900,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      const Text(
+                        'This account has been suspended for violating PassItOn marketplace policies.',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(color: Color(0xFF777D8E)),
+                      ),
+                      const SizedBox(height: 20),
+                      FilledButton.icon(
+                        onPressed: () =>
+                            context.read<AuthProvider>().logout(),
+                        icon: const Icon(Icons.logout_rounded),
+                        label: const Text('Sign Out'),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            );
+          } else if (authProvider.isCurrentUserAdmin) {
+            homeScreen = const AdminScreen();
+          } else {
+            homeScreen = const RootScreen();
+          }
+
           return MaterialApp(
             debugShowCheckedModeBanner: false,
             title: 'PassItOn',
@@ -83,92 +150,7 @@ class PassItOnApp extends StatelessWidget {
                 isDark: true,
               ),
             ),
-            home: StreamBuilder<User?>(
-              stream: FirebaseAuth.instance.authStateChanges(),
-              builder: (context, snapshot) {
-                if (snapshot.connectionState == ConnectionState.waiting) {
-                  return const Scaffold(
-                    backgroundColor: Color(0xFFF3F1EC),
-                    body: Center(
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          CircularProgressIndicator(color: Color(0xFF252832)),
-                          SizedBox(height: 16),
-                          Text(
-                            'Loading PassItOn...',
-                            style: TextStyle(
-                              color: Color(0xFF252832),
-                              fontWeight: FontWeight.w700,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  );
-                }
-                final user = snapshot.data;
-                if (user == null) {
-                  return authProvider.guestMode ? const RootScreen() : const AuthScreen();
-                }
-                return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-                  stream: FirebaseFirestore.instance
-                      .collection('users')
-                      .doc(user.uid)
-                      .snapshots(),
-                  builder: (context, userSnapshot) {
-                    final userData = userSnapshot.data?.data();
-                    if (userData?['isBanned'] == true) {
-                      return Scaffold(
-                        body: Center(
-                          child: Padding(
-                            padding: const EdgeInsets.all(32),
-                            child: Column(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                const Icon(
-                                  Icons.block_rounded,
-                                  size: 64,
-                                  color: Color(0xFFD94B64),
-                                ),
-                                const SizedBox(height: 16),
-                                const Text(
-                                  'Account Suspended',
-                                  style: TextStyle(
-                                    fontSize: 22,
-                                    fontWeight: FontWeight.w900,
-                                  ),
-                                ),
-                                const SizedBox(height: 8),
-                                const Text(
-                                  'This account has been suspended for violating PassItOn marketplace policies.',
-                                  textAlign: TextAlign.center,
-                                  style: TextStyle(color: Color(0xFF777D8E)),
-                                ),
-                                const SizedBox(height: 20),
-                                FilledButton.icon(
-                                  onPressed: () =>
-                                      context.read<AuthProvider>().logout(),
-                                  icon: const Icon(Icons.logout_rounded),
-                                  label: const Text('Sign Out'),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ),
-                      );
-                    }
-                    final role = userData?['role'] as String? ?? 'customer';
-                    final isAdmin =
-                        role == 'admin' || (userData?['isAdmin'] as bool? ?? false);
-                    if (isAdmin) {
-                      return const AdminScreen();
-                    }
-                    return const RootScreen();
-                  },
-                );
-              },
-            ),
+            home: homeScreen,
           );
         },
       ),
