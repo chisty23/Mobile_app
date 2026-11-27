@@ -19,6 +19,7 @@ Listing _makeListing({
   int price = 500,
   bool negotiable = true,
   String imageUrl = '',
+  List<String>? images,
   String sellerId = 'seller_1',
   String sellerName = 'Alice',
   String status = 'available',
@@ -38,7 +39,7 @@ Listing _makeListing({
     price: price,
     negotiable: negotiable,
     imageUrl: imageUrl,
-    images: imageUrl.isNotEmpty ? [imageUrl] : const [],
+    images: images ?? (imageUrl.isNotEmpty ? [imageUrl] : const []),
     sellerId: sellerId,
     sellerName: sellerName,
     status: status,
@@ -248,6 +249,7 @@ class _FakeListingRepository implements ListingRepository {
       price: price,
       negotiable: negotiable,
       imageUrl: imageUrls.isNotEmpty ? imageUrls.first : '',
+      images: List<String>.from(imageUrls),
       sellerId: sellerId,
       sellerName: fallbackSellerName,
       createdAt: DateTime.now(),
@@ -280,6 +282,7 @@ class _FakeListingRepository implements ListingRepository {
       price: price,
       negotiable: negotiable,
       imageUrl: imageUrls.isNotEmpty ? imageUrls.first : '',
+      images: List<String>.from(imageUrls),
       sellerId: cur.sellerId,
       sellerName: cur.sellerName,
       status: cur.status,
@@ -890,6 +893,39 @@ void main() {
       );
       expect(sellProvider.myListings.length, 1);
       expect(sellProvider.myListings.first.imageUrl, isEmpty);
+
+      // Mixed device-uploaded Data URI + external https:// URL are accepted
+      const sampleDeviceUri = 'data:image/jpeg;base64,/9j/4AAQSkZJRg==';
+      expect(
+        await sellProvider.createListing(
+          title: 'Mixed Gallery Camera',
+          description: 'Clean mirrorless camera body with kit lens',
+          category: 'Electronics',
+          condition: 'like-new',
+          price: 25000,
+          negotiable: true,
+          images: const [sampleDeviceUri, 'https://cdn.example.com/cam.jpg'],
+        ),
+        isTrue,
+      );
+      expect(sellProvider.myListings.last.galleryImages.length, 2);
+      expect(sellProvider.myListings.last.imageUrl, sampleDeviceUri);
+
+      // Oversized device URI exceeding Firestore safety cap is rejected
+      final hugeUri = 'data:image/jpeg;base64,${'A' * 265000}';
+      expect(
+        await sellProvider.createListing(
+          title: 'Oversized Photo Test',
+          description: 'Testing document budget enforcement',
+          category: 'Other',
+          condition: 'used',
+          price: 500,
+          negotiable: false,
+          images: [hugeUri],
+        ),
+        isFalse,
+      );
+      expect(sellProvider.error, isNotNull);
     });
 
     test('sets loading to false safely when signed out', () {

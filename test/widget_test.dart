@@ -9,6 +9,7 @@ import 'package:pass_it_on/repositories/listing_repository.dart';
 import 'package:pass_it_on/screens/browse_screen.dart';
 import 'package:pass_it_on/screens/favourites_screen.dart';
 import 'package:pass_it_on/screens/root_screen.dart';
+import 'package:pass_it_on/screens/sell_screen.dart';
 import 'package:pass_it_on/utils/app_typography.dart';
 import 'package:pass_it_on/utils/formatters.dart';
 import 'package:pass_it_on/widgets/animated_ui.dart';
@@ -454,6 +455,54 @@ void main() {
     await tester.drag(find.byType(ListView).first, const Offset(0, -250));
     await tester.pump();
     expect(find.text(AppFormatters.unknownUserName), findsOneWidget);
+    lp.dispose();
+  });
+
+  testWidgets('CreateListingSheet exposes both Choose Photo from Device and HTTPS URL input',
+      (WidgetTester tester) async {
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(() => tester.view.resetPhysicalSize());
+
+    final onePxPng = base64Encode(const [
+      137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1,
+      0, 0, 0, 1, 8, 6, 0, 0, 0, 31, 21, 196, 137, 0, 0, 0, 10, 73, 68, 65, 84,
+      120, 156, 99, 0, 1, 0, 0, 5, 0, 1, 13, 10, 45, 180, 0, 0, 0, 0, 73, 69,
+      78, 68, 174, 66, 96, 130,
+    ]);
+    final item = Listing(
+      id: 'item_device_photo',
+      title: 'Mechanical Keyboard',
+      description: 'Tactile switches with spare keycaps',
+      category: 'Electronics',
+      condition: 'like-new',
+      price: 2800,
+      negotiable: true,
+      imageUrl: 'data:image/png;base64,$onePxPng',
+      images: ['data:image/png;base64,$onePxPng'],
+      sellerId: 'seller_1',
+      sellerName: 'Alice',
+      status: 'available',
+      reservedFor: '',
+    );
+
+    final stubRepo = _StubListingRepo(const []);
+    addTearDown(stubRepo.dispose);
+    final lp = ListingProvider(
+      repository: stubRepo,
+      currentUidProvider: () => 'seller_1',
+      autoStart: false,
+    );
+
+    await tester.pumpWidget(_wrapWithProviders(
+      listingProvider: lp,
+      child: CreateListingSheet(editing: item),
+    ));
+    await tester.pump();
+
+    expect(find.text('Choose Photo from Device'), findsOneWidget);
+    expect(find.text('Or paste https:// image URL'), findsOneWidget);
+    expect(find.text('Cover'), findsOneWidget);
     lp.dispose();
   });
 }

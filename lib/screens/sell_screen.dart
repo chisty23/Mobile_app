@@ -5,6 +5,7 @@ import '../models.dart';
 import '../providers/app_providers.dart';
 import '../utils/app_typography.dart';
 import '../utils/formatters.dart';
+import '../utils/photo_picker.dart';
 import '../widgets/animated_ui.dart';
 import '../widgets/payment_checkout_sheet.dart';
 import '../widgets/smart_image.dart';
@@ -540,6 +541,7 @@ class _CreateListingSheetState extends State<CreateListingSheet> {
   String condition = 'used';
   String location = AppFormatters.listingLocations.first;
   bool negotiable = true;
+  bool _pickingPhotos = false;
   final List<String> _photos = [];
 
   @override
@@ -600,6 +602,78 @@ class _CreateListingSheetState extends State<CreateListingSheet> {
       _photos.add(raw);
       imageUrl.clear();
     });
+  }
+
+  Future<void> _pickDevicePhotos() async {
+    if (_pickingPhotos) return;
+    if (_photos.length >= 3) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Maximum 3 photos per listing')),
+      );
+      return;
+    }
+    if (!supportsDevicePhotoPicker) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Device gallery picker works on Web, Android, and iOS. On desktop, paste an https:// URL below.',
+          ),
+        ),
+      );
+      return;
+    }
+    setState(() => _pickingPhotos = true);
+    try {
+      final remaining = 3 - _photos.length;
+      final picked = await pickCompressedImages(
+        maxCount: remaining,
+        maxDimension: 640,
+      );
+      if (!mounted || picked.isEmpty) return;
+
+      var added = 0;
+      var rejected = 0;
+      var currentEmbeddedChars = _photos
+          .where(AppFormatters.isValidDataImageUri)
+          .fold<int>(0, (sum, p) => sum + p.length);
+
+      final accepted = <String>[];
+      for (final img in picked) {
+        if (_photos.length + accepted.length >= 3) break;
+        if (!AppFormatters.isValidImageSource(img)) {
+          rejected++;
+          continue;
+        }
+        final nextLen = AppFormatters.isValidDataImageUri(img) ? img.length : 0;
+        if (currentEmbeddedChars + nextLen >
+            AppFormatters.maxListingTotalImageChars) {
+          rejected++;
+          continue;
+        }
+        if (!_photos.contains(img) && !accepted.contains(img)) {
+          accepted.add(img);
+          currentEmbeddedChars += nextLen;
+          added++;
+        }
+      }
+
+      if (accepted.isNotEmpty) {
+        setState(() => _photos.addAll(accepted));
+      }
+      if (rejected > 0 && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              added > 0
+                  ? '$added photo(s) added; $rejected skipped due to size limit.'
+                  : 'Selected image exceeded the compact size limit; try a smaller photo or https:// URL.',
+            ),
+          ),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _pickingPhotos = false);
+    }
   }
 
   @override
@@ -681,8 +755,8 @@ class _CreateListingSheetState extends State<CreateListingSheet> {
                                   Flexible(
                                     child: Text(
                                       isEditing
-                                          ? 'Update item details, pricing, or image links.'
-                                          : 'Posting publicly as $myName · Optional HTTPS links.',
+                                          ? 'Update item details, pricing, or photos.'
+                                          : 'Posting publicly as $myName · Optional device photos or links.',
                                       overflow: TextOverflow.ellipsis,
                                       style: TextStyle(
                                         color: isDark
@@ -716,11 +790,11 @@ class _CreateListingSheetState extends State<CreateListingSheet> {
                     children: [
                       Row(
                         children: [
-                          const Icon(Icons.link_rounded, color: Color(0xFF667B72), size: 20),
+                          const Icon(Icons.photo_library_outlined, color: Color(0xFF667B72), size: 20),
                           const SizedBox(width: 8),
                           Expanded(
                             child: Text(
-                              'Item Image URLs (${_photos.length}/3 optional)',
+                              'Item Photos (${_photos.length}/3 optional)',
                               style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 14),
                             ),
                           ),
@@ -728,7 +802,7 @@ class _CreateListingSheetState extends State<CreateListingSheet> {
                       ),
                       const SizedBox(height: 6),
                       const Text(
-                        'Paste external https:// photo URLs, or leave empty to display a clean category artwork card.',
+                        'Upload photos from your device or paste https:// image URLs (up to 3 total), or leave empty for category artwork.',
                         style: TextStyle(fontSize: 11.5, color: Color(0xFF777D8E)),
                       ),
                       const SizedBox(height: 12),
@@ -821,6 +895,35 @@ class _CreateListingSheetState extends State<CreateListingSheet> {
                           ),
                         ),
                       const SizedBox(height: 12),
+                      SizedBox(
+                        width: double.infinity,
+                        child: FilledButton.tonalIcon(
+                          onPressed: (_photos.length >= 3 || _pickingPhotos)
+                              ? null
+                              : _pickDevicePhotos,
+                          icon: _pickingPhotos
+                              ? const SizedBox(
+                                  width: 16,
+                                  height: 16,
+                                  child: CircularProgressIndicator(strokeWidth: 2),
+                                )
+                              : const Icon(Icons.add_photo_alternate_rounded, size: 18),
+                          label: Text(
+                            _pickingPhotos
+                                ? 'Compressing device photo...'
+                                : _photos.length >= 3
+                                    ? 'Maximum 3 photos attached'
+                                    : 'Choose Photo from Device',
+                          ),
+                          style: FilledButton.styleFrom(
+                            padding: const EdgeInsets.symmetric(vertical: 12),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(14),
+                            ),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 10),
                       Row(
                         children: [
                           Expanded(
@@ -829,7 +932,7 @@ class _CreateListingSheetState extends State<CreateListingSheet> {
                               keyboardType: TextInputType.url,
                               onFieldSubmitted: (_) => _addPhotoUrl(),
                               decoration: InputDecoration(
-                                labelText: 'https:// image URL',
+                                labelText: 'Or paste https:// image URL',
                                 hintText: 'https://example.com/photo.jpg',
                                 prefixIcon: const Icon(Icons.add_link_rounded),
                                 filled: true,
@@ -887,6 +990,7 @@ class _CreateListingSheetState extends State<CreateListingSheet> {
                     Expanded(
                       child: DropdownButtonFormField<String>(
                         initialValue: category,
+                        isExpanded: true,
                         decoration: _decoration('Category', Icons.category_outlined, isDark),
                         items: const [
                           'Books',
@@ -895,7 +999,12 @@ class _CreateListingSheetState extends State<CreateListingSheet> {
                           'Sports',
                           'Furniture',
                           'Other',
-                        ].map((e) => DropdownMenuItem(value: e, child: Text(e))).toList(),
+                        ]
+                            .map((e) => DropdownMenuItem(
+                                  value: e,
+                                  child: Text(e, overflow: TextOverflow.ellipsis),
+                                ))
+                            .toList(),
                         onChanged: (value) => setState(() => category = value ?? 'Books'),
                       ),
                     ),
@@ -903,9 +1012,13 @@ class _CreateListingSheetState extends State<CreateListingSheet> {
                     Expanded(
                       child: DropdownButtonFormField<String>(
                         initialValue: condition,
+                        isExpanded: true,
                         decoration: _decoration('Condition', Icons.auto_awesome_outlined, isDark),
                         items: const ['new', 'like-new', 'used', 'worn']
-                            .map((e) => DropdownMenuItem(value: e, child: Text(e)))
+                            .map((e) => DropdownMenuItem(
+                                  value: e,
+                                  child: Text(e, overflow: TextOverflow.ellipsis),
+                                ))
                             .toList(),
                         onChanged: (value) => setState(() => condition = value ?? 'used'),
                       ),
@@ -915,9 +1028,13 @@ class _CreateListingSheetState extends State<CreateListingSheet> {
                 const SizedBox(height: 10),
                 DropdownButtonFormField<String>(
                   initialValue: location,
+                  isExpanded: true,
                   decoration: _decoration('Campus / Pickup Location', Icons.location_on_outlined, isDark),
                   items: AppFormatters.listingLocations
-                      .map((e) => DropdownMenuItem(value: e, child: Text(e)))
+                      .map((e) => DropdownMenuItem(
+                            value: e,
+                            child: Text(e, overflow: TextOverflow.ellipsis),
+                          ))
                       .toList(),
                   onChanged: (value) =>
                       setState(() => location = value ?? AppFormatters.listingLocations.first),
@@ -936,11 +1053,14 @@ class _CreateListingSheetState extends State<CreateListingSheet> {
                   decoration: _decoration('Price (৳)', Icons.payments_outlined, isDark),
                 ),
                 const SizedBox(height: 8),
-                SwitchListTile(
-                  contentPadding: EdgeInsets.zero,
-                  value: negotiable,
-                  onChanged: (value) => setState(() => negotiable = value),
-                  title: const Text('Price is negotiable'),
+                Material(
+                  type: MaterialType.transparency,
+                  child: SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    value: negotiable,
+                    onChanged: (value) => setState(() => negotiable = value),
+                    title: const Text('Price is negotiable'),
+                  ),
                 ),
                 if (!isEditing) ...[
                   Builder(

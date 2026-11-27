@@ -334,6 +334,24 @@ void main() {
         AppFormatters.isValidHttpsImageUrl('ftp://example.com/a.jpg'),
         isFalse,
       );
+      expect(
+        AppFormatters.isValidDataImageUri('data:image/jpeg;base64,/9j/4AAQ=='),
+        isTrue,
+      );
+      expect(
+        AppFormatters.isValidImageSource('data:image/png;base64,iVBORw0KGgo='),
+        isTrue,
+      );
+      expect(
+        AppFormatters.isValidDataImageUri('data:text/html;base64,PGgxPg=='),
+        isFalse,
+      );
+      expect(
+        AppFormatters.validateOptionalImageSource(
+          'data:image/jpeg;base64,${'A' * (AppFormatters.maxDataImageUriChars + 10)}',
+        ),
+        isNotNull,
+      );
     });
 
     test('BackendApi reports isEndpointUnavailable on HTTP 404', () async {

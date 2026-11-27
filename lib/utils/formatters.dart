@@ -4,7 +4,14 @@ class AppFormatters {
 
   static const String unknownUserName = 'Unknown user';
 
-  /// Validates an externally hosted HTTPS image URL (or rejects non-HTTPS/data URIs).
+  static const int maxDataImageUriChars = 260000;
+  static const int maxListingTotalImageChars = 780000;
+  static final RegExp _dataImageUriPattern = RegExp(
+    r'^data:image\/(jpeg|jpg|png|webp);base64,[A-Za-z0-9+/=]+$',
+    caseSensitive: false,
+  );
+
+  /// Validates an externally hosted HTTPS image URL (rejects non-HTTPS/data URIs).
   static bool isValidHttpsImageUrl(String input) {
     final trimmed = input.trim();
     if (trimmed.isEmpty) return false;
@@ -15,12 +22,34 @@ class AppFormatters {
         !trimmed.contains(RegExp(r'\s'));
   }
 
+  /// Validates a compact base64 Data URI compressed from a device photo.
+  static bool isValidDataImageUri(String input) {
+    final trimmed = input.trim();
+    if (trimmed.isEmpty || trimmed.length > maxDataImageUriChars) return false;
+    return _dataImageUriPattern.hasMatch(trimmed);
+  }
+
+  /// Validates either an external HTTPS image URL or a compact device Data URI.
+  static bool isValidImageSource(String input) {
+    return isValidHttpsImageUrl(input) || isValidDataImageUri(input);
+  }
+
   /// Form validator for optional external HTTPS image URL inputs.
   static String? validateOptionalHttpsImageUrl(String? input) {
     final trimmed = input?.trim() ?? '';
     if (trimmed.isEmpty) return null;
     if (!isValidHttpsImageUrl(trimmed)) {
       return 'Enter a valid external https:// image URL (no spaces or embedded files)';
+    }
+    return null;
+  }
+
+  /// Form/provider validator accepting optional external HTTPS URLs or device photos.
+  static String? validateOptionalImageSource(String? input) {
+    final trimmed = input?.trim() ?? '';
+    if (trimmed.isEmpty) return null;
+    if (!isValidImageSource(trimmed)) {
+      return 'Choose a device image under 250 KB or enter a valid https:// image URL';
     }
     return null;
   }

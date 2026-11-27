@@ -146,7 +146,7 @@ class SellProvider extends ChangeNotifier {
   int pendingOfferCountFor(String listingId) =>
       _pendingOfferCounts[listingId] ?? 0;
 
-  List<String> _validateHttpsImageList(List<String> images, String imageUrl) {
+  List<String> _validateImageList(List<String> images, String imageUrl) {
     final combined = <String>[
       for (final raw in images)
         if (raw.trim().isNotEmpty) raw.trim(),
@@ -154,12 +154,21 @@ class SellProvider extends ChangeNotifier {
     if (combined.isEmpty && imageUrl.trim().isNotEmpty) {
       combined.add(imageUrl.trim());
     }
-    for (final url in combined) {
-      if (!AppFormatters.isValidHttpsImageUrl(url)) {
+    int totalEmbeddedChars = 0;
+    for (final src in combined.take(3)) {
+      if (!AppFormatters.isValidImageSource(src)) {
         throw const OfferValidationException(
-          'Only valid external https:// image URLs are allowed (or leave empty for category fallback).',
+          'Use compressed photos from your device (under 250 KB each) or valid https:// image URLs.',
         );
       }
+      if (AppFormatters.isValidDataImageUri(src)) {
+        totalEmbeddedChars += src.length;
+      }
+    }
+    if (totalEmbeddedChars > AppFormatters.maxListingTotalImageChars) {
+      throw const OfferValidationException(
+        'Combined device photos exceed size limit. Remove a photo or use an https:// URL.',
+      );
     }
     return combined.take(3).toList();
   }
@@ -196,7 +205,7 @@ class SellProvider extends ChangeNotifier {
     error = null;
     notifyListeners();
     try {
-      final validImages = _validateHttpsImageList(images, imageUrl);
+      final validImages = _validateImageList(images, imageUrl);
       await repo.createListing(
         sellerId: uid,
         fallbackSellerName: _nameProvider(),
@@ -247,7 +256,7 @@ class SellProvider extends ChangeNotifier {
     error = null;
     notifyListeners();
     try {
-      final validImages = _validateHttpsImageList(images, imageUrl);
+      final validImages = _validateImageList(images, imageUrl);
       await repo.updateListing(
         listingId: listingId,
         title: title,

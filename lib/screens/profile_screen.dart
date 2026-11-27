@@ -5,6 +5,7 @@ import '../models.dart';
 import '../providers/app_providers.dart';
 import '../utils/app_typography.dart';
 import '../utils/formatters.dart';
+import '../utils/photo_picker.dart';
 import '../widgets/animated_ui.dart';
 import '../widgets/legal_dialog.dart';
 import '../widgets/smart_image.dart';
@@ -28,7 +29,15 @@ class ProfileScreen extends StatelessWidget {
     required String existingPhoto,
   }) async {
     final formKey = GlobalKey<FormState>();
-    final urlCtrl = TextEditingController(text: existingPhoto);
+    final urlCtrl = TextEditingController(
+      text: AppFormatters.isValidHttpsImageUrl(existingPhoto)
+          ? existingPhoto
+          : '',
+    );
+    String devicePhotoDataUri = AppFormatters.isValidDataImageUri(existingPhoto)
+        ? existingPhoto
+        : '';
+    bool pickingPhoto = false;
     final messenger = ScaffoldMessenger.of(context);
     final auth = context.read<AuthProvider>();
     final dir = context.read<ProfileDirectoryProvider>();
@@ -37,13 +46,15 @@ class ProfileScreen extends StatelessWidget {
       context: context,
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setDialogState) {
-          final previewUrl = urlCtrl.text.trim();
+          final typedUrl = urlCtrl.text.trim();
+          final effectivePhoto =
+              typedUrl.isNotEmpty ? typedUrl : devicePhotoDataUri;
           return AlertDialog(
             title: const Row(
               children: [
-                Icon(Icons.link_rounded, color: Color(0xFF667B72)),
+                Icon(Icons.photo_camera_front_outlined, color: Color(0xFF667B72)),
                 SizedBox(width: 8),
-                Expanded(child: Text('Profile Photo URL')),
+                Expanded(child: Text('Profile Photo')),
               ],
             ),
             content: Form(
@@ -59,36 +70,78 @@ class ProfileScreen extends StatelessWidget {
                       color: Color(0xFF252832),
                     ),
                     child: ClipOval(
-                      child: AppFormatters.isValidHttpsImageUrl(previewUrl)
+                      child: AppFormatters.isValidImageSource(effectivePhoto)
                           ? SmartListingImage(
-                              imageUrl: previewUrl,
+                              imageUrl: effectivePhoto,
                               fit: BoxFit.cover,
                               fallback: _initialPlaceholder(currentName),
                             )
                           : _initialPlaceholder(currentName),
                     ),
                   ),
-                  const SizedBox(height: 12),
+                  const SizedBox(height: 10),
+                  FilledButton.tonalIcon(
+                    onPressed: pickingPhoto
+                        ? null
+                        : () async {
+                            setDialogState(() => pickingPhoto = true);
+                            final picked = await pickSingleAvatarFromDevice(ctx);
+                            if (!ctx.mounted) return;
+                            setDialogState(() {
+                              pickingPhoto = false;
+                              if (picked != null) {
+                                devicePhotoDataUri = picked;
+                                urlCtrl.clear();
+                              }
+                            });
+                          },
+                    icon: pickingPhoto
+                        ? const SizedBox(
+                            width: 15,
+                            height: 15,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(Icons.add_photo_alternate_outlined, size: 17),
+                    label: Text(
+                      pickingPhoto
+                          ? 'Compressing...'
+                          : 'Choose Photo from Device',
+                    ),
+                  ),
+                  if (devicePhotoDataUri.isNotEmpty && typedUrl.isEmpty) ...[
+                    const SizedBox(height: 6),
+                    const Text(
+                      'Device photo ready',
+                      style: TextStyle(
+                        fontSize: 11.5,
+                        fontWeight: FontWeight.w700,
+                        color: Color(0xFF24A889),
+                      ),
+                    ),
+                  ],
+                  const SizedBox(height: 10),
                   const Text(
-                    'Paste an externally hosted https:// image URL, or clear it to show your initials.',
+                    'Or paste an external https:// image URL, or leave empty to show initials.',
                     style: TextStyle(fontSize: 12, color: Color(0xFF777D8E)),
                   ),
-                  const SizedBox(height: 10),
+                  const SizedBox(height: 8),
                   TextFormField(
                     controller: urlCtrl,
                     keyboardType: TextInputType.url,
-                    onChanged: (_) => setDialogState(() {}),
+                    onChanged: (v) => setDialogState(() {
+                      if (v.trim().isNotEmpty) devicePhotoDataUri = '';
+                    }),
                     validator: AppFormatters.validateOptionalHttpsImageUrl,
                     decoration: const InputDecoration(
-                      labelText: 'Image URL (https://...)',
-                      prefixIcon: Icon(Icons.image_outlined),
+                      labelText: 'Or Image URL (https://...)',
+                      prefixIcon: Icon(Icons.link_rounded),
                     ),
                   ),
                 ],
               ),
             ),
             actions: [
-              if (existingPhoto.isNotEmpty)
+              if (effectivePhoto.isNotEmpty)
                 TextButton(
                   onPressed: () async {
                     final ok = await auth.updateProfile(
@@ -128,7 +181,9 @@ class ProfileScreen extends StatelessWidget {
               FilledButton(
                 onPressed: () async {
                   if (!formKey.currentState!.validate()) return;
-                  final cleaned = urlCtrl.text.trim();
+                  final nextUrl = urlCtrl.text.trim();
+                  final nextEffective =
+                      nextUrl.isNotEmpty ? nextUrl : devicePhotoDataUri;
                   final ok = await auth.updateProfile(
                     name: currentName,
                     bio: bio,
@@ -139,8 +194,8 @@ class ProfileScreen extends StatelessWidget {
                     batchYear: batchYear,
                     meetupSpot: meetupSpot,
                     previousPhone: phone,
-                    photoRaw: cleaned,
-                    removePhoto: cleaned.isEmpty,
+                    photoRaw: nextEffective,
+                    removePhoto: nextEffective.isEmpty,
                     updatePhotoField: true,
                     directory: dir,
                   );
@@ -150,7 +205,7 @@ class ProfileScreen extends StatelessWidget {
                       content: Text(
                         ok
                             ? 'Profile photo updated across your listings & chats!'
-                            : auth.error ?? 'Could not save photo URL',
+                            : auth.error ?? 'Could not save photo',
                       ),
                     ),
                   );
@@ -1331,6 +1386,8 @@ class _EditProfileSheetState extends State<_EditProfileSheet> {
   late final TextEditingController _photoUrlCtrl;
 
   String _selectedLocation = '';
+  String _devicePhotoDataUri = '';
+  bool _pickingPhoto = false;
   late final String _initialPhone;
 
   @override
@@ -1357,11 +1414,30 @@ class _EditProfileSheetState extends State<_EditProfileSheet> {
     _selectedLocation =
         AppFormatters.listingLocations.contains(loc) ? loc : '';
     final existingPhoto = (d['photoUrl'] as String?) ?? widget.userPhotoUrl;
+    _devicePhotoDataUri = AppFormatters.isValidDataImageUri(existingPhoto)
+        ? existingPhoto
+        : '';
     _photoUrlCtrl = TextEditingController(
       text: AppFormatters.isValidHttpsImageUrl(existingPhoto)
           ? existingPhoto
           : '',
     );
+  }
+
+  Future<void> _pickDeviceAvatar() async {
+    if (_pickingPhoto) return;
+    setState(() => _pickingPhoto = true);
+    try {
+      final picked = await pickSingleAvatarFromDevice(context);
+      if (picked != null && mounted) {
+        setState(() {
+          _devicePhotoDataUri = picked;
+          _photoUrlCtrl.clear();
+        });
+      }
+    } finally {
+      if (mounted) setState(() => _pickingPhoto = false);
+    }
   }
 
   @override
@@ -1385,7 +1461,9 @@ class _EditProfileSheetState extends State<_EditProfileSheet> {
     final messenger = ScaffoldMessenger.of(context);
     final nav = Navigator.of(context);
 
-    final cleanedUrl = _photoUrlCtrl.text.trim();
+    final typedUrl = _photoUrlCtrl.text.trim();
+    final effectivePhoto =
+        typedUrl.isNotEmpty ? typedUrl : _devicePhotoDataUri;
     final ok = await auth.updateProfile(
       name: _nameCtrl.text,
       bio: _bioCtrl.text,
@@ -1395,8 +1473,8 @@ class _EditProfileSheetState extends State<_EditProfileSheet> {
       location: _selectedLocation,
       batchYear: _batchCtrl.text,
       meetupSpot: _meetupCtrl.text,
-      photoRaw: cleanedUrl,
-      removePhoto: cleanedUrl.isEmpty,
+      photoRaw: effectivePhoto,
+      removePhoto: effectivePhoto.isEmpty,
       updatePhotoField: true,
       previousPhone: _initialPhone,
       recoveryGmail: _recoveryCtrl.text,
@@ -1422,7 +1500,9 @@ class _EditProfileSheetState extends State<_EditProfileSheet> {
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final auth = context.watch<AuthProvider>();
-    final previewUrl = _photoUrlCtrl.text.trim();
+    final typedUrl = _photoUrlCtrl.text.trim();
+    final effectivePhoto =
+        typedUrl.isNotEmpty ? typedUrl : _devicePhotoDataUri;
 
     return DraggableScrollableSheet(
       initialChildSize: 0.88,
@@ -1492,41 +1572,78 @@ class _EditProfileSheetState extends State<_EditProfileSheet> {
                             ),
                           ),
                           child: ClipOval(
-                            child: AppFormatters.isValidHttpsImageUrl(previewUrl)
+                            child: AppFormatters.isValidImageSource(effectivePhoto)
                                 ? SmartListingImage(
-                                    imageUrl: previewUrl,
+                                    imageUrl: effectivePhoto,
                                     fit: BoxFit.cover,
                                     fallback: _initialCircle(_nameCtrl.text),
                                   )
                                 : _initialCircle(_nameCtrl.text),
                           ),
                         ),
-                        const SizedBox(height: 8),
-                        if (previewUrl.isNotEmpty)
-                          TextButton.icon(
-                            onPressed: () =>
-                                setState(() => _photoUrlCtrl.clear()),
-                            icon: const Icon(
-                              Icons.delete_outline,
-                              size: 16,
-                              color: Color(0xFFD94B64),
+                        const SizedBox(height: 10),
+                        Wrap(
+                          alignment: WrapAlignment.center,
+                          spacing: 8,
+                          runSpacing: 6,
+                          children: [
+                            FilledButton.tonalIcon(
+                              onPressed: _pickingPhoto ? null : _pickDeviceAvatar,
+                              icon: _pickingPhoto
+                                  ? const SizedBox(
+                                      width: 15,
+                                      height: 15,
+                                      child: CircularProgressIndicator(strokeWidth: 2),
+                                    )
+                                  : const Icon(Icons.add_photo_alternate_outlined, size: 17),
+                              label: Text(
+                                _pickingPhoto
+                                    ? 'Compressing...'
+                                    : 'Upload from Device',
+                              ),
                             ),
-                            label: const Text(
-                              'Clear Photo URL (Use Initials)',
-                              style: TextStyle(color: Color(0xFFD94B64)),
+                            if (effectivePhoto.isNotEmpty)
+                              TextButton.icon(
+                                onPressed: () => setState(() {
+                                  _photoUrlCtrl.clear();
+                                  _devicePhotoDataUri = '';
+                                }),
+                                icon: const Icon(
+                                  Icons.delete_outline,
+                                  size: 16,
+                                  color: Color(0xFFD94B64),
+                                ),
+                                label: const Text(
+                                  'Use Initials',
+                                  style: TextStyle(color: Color(0xFFD94B64)),
+                                ),
+                              ),
+                          ],
+                        ),
+                        if (_devicePhotoDataUri.isNotEmpty && typedUrl.isEmpty) ...[
+                          const SizedBox(height: 6),
+                          const Text(
+                            'Device photo selected (compressed JPEG)',
+                            style: TextStyle(
+                              fontSize: 11.5,
+                              fontWeight: FontWeight.w700,
+                              color: Color(0xFF24A889),
                             ),
                           ),
+                        ],
                       ],
                     ),
                   ),
-                  const SizedBox(height: 8),
+                  const SizedBox(height: 10),
                   _editField(
                     controller: _photoUrlCtrl,
-                    label: 'Profile Picture HTTPS URL (optional)',
+                    label: 'Or Profile Picture HTTPS URL (optional)',
                     icon: Icons.link_rounded,
                     isDark: isDark,
                     keyboardType: TextInputType.url,
-                    onChanged: (_) => setState(() {}),
+                    onChanged: (v) => setState(() {
+                      if (v.trim().isNotEmpty) _devicePhotoDataUri = '';
+                    }),
                     validator: AppFormatters.validateOptionalHttpsImageUrl,
                   ),
                   const SizedBox(height: 12),

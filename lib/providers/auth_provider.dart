@@ -476,7 +476,7 @@ class AuthProvider extends ChangeNotifier {
       final normPhone = AppFormatters.normalizePhone(phone);
       final cleanPhotoUrl = photoRaw.trim();
 
-      final photoErr = AppFormatters.validateOptionalHttpsImageUrl(cleanPhotoUrl);
+      final photoErr = AppFormatters.validateOptionalImageSource(cleanPhotoUrl);
       if (photoErr != null) {
         error = photoErr;
         return false;
@@ -619,7 +619,7 @@ class AuthProvider extends ChangeNotifier {
     final cleanPhotoInput = photoRaw.trim();
     if (!removePhoto && cleanPhotoInput.isNotEmpty) {
       final photoErr =
-          AppFormatters.validateOptionalHttpsImageUrl(cleanPhotoInput);
+          AppFormatters.validateOptionalImageSource(cleanPhotoInput);
       if (photoErr != null) {
         error = photoErr;
         notifyListeners();
@@ -653,9 +653,9 @@ class AuthProvider extends ChangeNotifier {
       }
 
       await current.updateDisplayName(name.trim());
-      if (removePhoto || nextPhoto.isEmpty) {
+      if (removePhoto || nextPhoto.isEmpty || nextPhoto.length >= 1800) {
         await current.updatePhotoURL(null);
-      } else if (nextPhoto.length < 1800) {
+      } else {
         await current.updatePhotoURL(nextPhoto);
       }
 

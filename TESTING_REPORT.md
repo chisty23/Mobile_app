@@ -17,14 +17,14 @@
 | Check | Status | Details |
 |---|---|---|
 | `npm --prefix emulator_tests install` | **PASSED** | Installed `@firebase/rules-unit-testing@^3.0.4` & `firebase@^10.14.1` in `repo/emulator_tests/`. |
-| `flutter analyze --no-pub` | **PASSED** | `No issues found! (ran in 62.7s)` across all `lib/` and `test/` Dart files. |
-| `flutter test --no-pub` | **PASSED (`39 / 39`)** | All 39 unit, domain, provider, and widget tests passed (`+39: All tests passed!`, 0 failed, 0 skipped). |
+| `flutter analyze --no-pub` | **PASSED** | `No issues found! (ran in 11.3s)` across all `lib/` and `test/` Dart files. |
+| `flutter test --no-pub` | **PASSED (`40 / 40`)** | All 40 unit, domain, provider, and widget tests passed (`+40: All tests passed!`, 0 failed, 0 skipped). |
 | **Firebase Firestore Emulator Rules Suite** (`firebase emulators:exec --only firestore --project pass-it-on-p07-rules-test "npm --prefix emulator_tests test"`) | **PASSED (`9 / 9`)** | All 9 Firestore security rules test suites passed (`pass 9, fail 0` in `10.16s`) against OpenJDK 21 LTS with **zero** `maximum of 1000 expressions` runtime ceiling errors. |
-| `flutter build web --release --pwa-strategy=none --no-pub` | **PASSED** | `Compiling lib\main.dart for the Web... 62.3s`, `Wasm dry run succeeded.`, `Built build\web`. |
+| `flutter build web --release --pwa-strategy=none --no-pub` | **PASSED** | `Compiling lib\main.dart for the Web... 65.3s`, `Wasm dry run succeeded.`, `Built build\web`. |
 
 ---
 
-## 2. Flutter Suite Breakdown (`39` Passing Tests in `flutter test`)
+## 2. Flutter Suite Breakdown (`40` Passing Tests in `flutter test`)
 
 ### `test/models_and_logic_test.dart`
 - `Listing` model status getters (`isAvailable`, `isReserved`, `isSold`)
@@ -32,7 +32,7 @@
 - `ThemeProvider` light/dark toggle behavior
 - `Listing` & `MarketOffer` platform fee payment fields and multi-photo gallery serialization
 - Student `.edu`/`.ac` verification helpers & `PlatformMetrics` calculations
-- Option B external `https://` image URL validator (accepts HTTPS/empty; rejects `http://`, `ftp://`, and `data:image` base64)
+- Option B external `https://` image URL validator and hybrid device Data URI validator (`isValidDataImageUri`, `isValidImageSource`, `validateOptionalImageSource`: accepts HTTPS and compact `<= 260,000` char compressed JPEG/PNG/WebP Data URIs; rejects `http://`, `ftp://`, `data:text/html`, and oversized base64 strings)
 - `BackendApi` reference client HTTP 404 endpoint-unavailable handling
 - Authentic font families (`EBGaramond`, `BodoniModa`, `Italiana`)
 - Phone number normalization, validation, masking, and Gmail recovery validation
@@ -44,7 +44,7 @@
 - Server-backed keyword search (`keywords` array) finding items beyond the initial 30-item page, plus clean `searchError` surfacing on simulated search failures
 - Multi-filter (`category`, `condition`, `price` range, `onlyNegotiable`), sorting (`Price high`), `activeFilterCount`, and `resetAllFilters()` consistency
 - Optimistic `toggleFavorite` persistence across sold/deleted items (`No longer available` deleted stub via cached metadata) AND clean rollback + error surfacing on Firestore failure
-- `SellProvider` validation (`title`/`description`/`price` bounds, rejecting non-HTTPS listing URLs), empty URL omitting fallback photo string, and resetting `loading = false` safely on sign-out
+- `SellProvider` validation (`title`/`description`/`price` bounds, accepting mixed compressed device Data URIs + `https://` URLs, rejecting non-HTTPS links and oversized device URIs above Firestore cap), empty URL omitting fallback photo string, and resetting `loading = false` safely on sign-out
 - **Atomic Offer Acceptance & Concurrency:** seller accepting Offer A atomically reserves listing, generates Handover PIN, and declines competing Offer B in the same commit; concurrent accept attempt on declined Offer B fails cleanly
 - **Offer Counter Asymmetry & Turn Lock:** seller `counter` updates amount/turn (`lastUpdatedBy`); seller cannot double-counter their own previous counter-offer; buyer cannot counter back or reset a `countered` offer back to `pending`; seller cannot call `acceptCounter`; buyer `declineCounter` leaves listing `'available'`
 - **48-Hour Expiry:** offers older than 48h reject `accept`, `counter`, `decline`, and `withdraw`, transition cleanly to `'expired'`, and cannot be reactivated via `validateOfferSubmission`
@@ -56,7 +56,7 @@
 ### `test/widget_test.dart`
 - `SmartListingImage` legacy decode & `ListingCategoryArtwork.fallback` icon/gradient rendering
 - `LegalPoliciesDialog`, `AnimatedUI` skeletons/badges, and `UserAvatar` initials & `'Unknown user'` fallback
-- `BrowseScreen`, `FavouritesScreen`, `RootScreen` (4 bottom tabs + top-bar `Messages`), and `ListingDetailSheet` (`Make Offer` + `Buy at Asking Price`) rendered at `390x844` mobile viewport with zero overflow
+- `BrowseScreen`, `FavouritesScreen`, `RootScreen` (4 bottom tabs + top-bar `Messages`), `ListingDetailSheet` (`Make Offer` + `Buy at Asking Price`), and `CreateListingSheet` (`Choose Photo from Device` + `Or paste https:// image URL`, `Cover` thumbnail, responsive dropdowns) rendered at `390x844` mobile viewport with zero overflow
 
 ---
 

@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import '../providers/app_providers.dart';
 import '../utils/app_typography.dart';
 import '../utils/formatters.dart';
+import '../utils/photo_picker.dart';
 import '../widgets/animated_ui.dart';
 import '../widgets/legal_dialog.dart';
 import '../widgets/smart_image.dart';
@@ -27,6 +28,8 @@ class _AuthScreenState extends State<AuthScreen> {
   /// Phone registration sub-mode: `false` = Phone + Account Gmail + Password, `true` = SMS OTP.
   bool _phoneSmsOtpMode = false;
   bool _otpSent = false;
+  String _devicePhotoDataUri = '';
+  bool _pickingPhoto = false;
 
   final name = TextEditingController();
   final email = TextEditingController();
@@ -267,6 +270,9 @@ class _AuthScreenState extends State<AuthScreen> {
       final accountGmail = _registerMode == 'gmail'
           ? email.text.trim()
           : recoveryGmail.text.trim();
+      final typedPhoto = photoUrl.text.trim();
+      final effectivePhoto =
+          typedPhoto.isNotEmpty ? typedPhoto : _devicePhotoDataUri;
       ok = await auth.register(
         name: name.text,
         email: accountGmail,
@@ -274,7 +280,7 @@ class _AuthScreenState extends State<AuthScreen> {
         department: department.text,
         hostel: hostel.text,
         phone: phone.text,
-        photoRaw: photoUrl.text.trim(),
+        photoRaw: effectivePhoto,
         accountMode: _registerMode,
       );
     } else {
@@ -433,84 +439,167 @@ class _AuthScreenState extends State<AuthScreen> {
                         const SizedBox(height: 18),
 
                         if (register) ...[
-                          // Live Avatar Preview (External HTTPS URL + Initials Fallback)
-                          Center(
-                            child: Column(
-                              children: [
-                                Container(
-                                  width: 72,
-                                  height: 72,
-                                  decoration: BoxDecoration(
-                                    shape: BoxShape.circle,
-                                    color: isDark
-                                        ? const Color(0xFF262B37)
-                                        : const Color(0xFF252832),
-                                    border: Border.all(
-                                      color: const Color(0xFF667B72)
-                                          .withValues(alpha: 0.45),
-                                      width: 1.5,
-                                    ),
-                                  ),
-                                  child: ClipOval(
-                                    child: AppFormatters.isValidHttpsImageUrl(
-                                      photoUrl.text,
-                                    )
-                                        ? SmartListingImage(
-                                            imageUrl: photoUrl.text.trim(),
-                                            fit: BoxFit.cover,
-                                            fallback: Center(
-                                              child: Text(
-                                                name.text.trim().isNotEmpty
-                                                    ? name.text
-                                                        .trim()[0]
-                                                        .toUpperCase()
-                                                    : '?',
-                                                style: AppTypography.display(
-                                                  size: 26,
-                                                  color: Colors.white,
-                                                ),
-                                              ),
-                                            ),
-                                          )
-                                        : Center(
-                                            child: name.text.trim().isNotEmpty
-                                                ? Text(
-                                                    name.text
-                                                        .trim()[0]
-                                                        .toUpperCase(),
-                                                    style:
-                                                        AppTypography.display(
+                          // Live Avatar Preview (Device Upload or External HTTPS URL + Initials Fallback)
+                          Builder(
+                            builder: (context) {
+                              final typedPhoto = photoUrl.text.trim();
+                              final effectivePhoto = typedPhoto.isNotEmpty
+                                  ? typedPhoto
+                                  : _devicePhotoDataUri;
+                              return Center(
+                                child: Column(
+                                  children: [
+                                    Container(
+                                      width: 72,
+                                      height: 72,
+                                      decoration: BoxDecoration(
+                                        shape: BoxShape.circle,
+                                        color: isDark
+                                            ? const Color(0xFF262B37)
+                                            : const Color(0xFF252832),
+                                        border: Border.all(
+                                          color: const Color(0xFF667B72)
+                                              .withValues(alpha: 0.45),
+                                          width: 1.5,
+                                        ),
+                                      ),
+                                      child: ClipOval(
+                                        child: AppFormatters.isValidImageSource(
+                                          effectivePhoto,
+                                        )
+                                            ? SmartListingImage(
+                                                imageUrl: effectivePhoto,
+                                                fit: BoxFit.cover,
+                                                fallback: Center(
+                                                  child: Text(
+                                                    name.text.trim().isNotEmpty
+                                                        ? name.text
+                                                            .trim()[0]
+                                                            .toUpperCase()
+                                                        : '?',
+                                                    style: AppTypography.display(
                                                       size: 26,
                                                       color: Colors.white,
                                                     ),
-                                                  )
-                                                : const Icon(
-                                                    Icons.person_outline_rounded,
-                                                    size: 32,
-                                                    color: Colors.white70,
                                                   ),
+                                                ),
+                                              )
+                                            : Center(
+                                                child: name.text
+                                                        .trim()
+                                                        .isNotEmpty
+                                                    ? Text(
+                                                        name.text
+                                                            .trim()[0]
+                                                            .toUpperCase(),
+                                                        style: AppTypography
+                                                            .display(
+                                                          size: 26,
+                                                          color: Colors.white,
+                                                        ),
+                                                      )
+                                                    : const Icon(
+                                                        Icons
+                                                            .person_outline_rounded,
+                                                        size: 32,
+                                                        color: Colors.white70,
+                                                      ),
+                                              ),
+                                      ),
+                                    ),
+                                    const SizedBox(height: 8),
+                                    Wrap(
+                                      alignment: WrapAlignment.center,
+                                      spacing: 8,
+                                      runSpacing: 4,
+                                      children: [
+                                        FilledButton.tonalIcon(
+                                          onPressed: _pickingPhoto
+                                              ? null
+                                              : () async {
+                                                  setState(() =>
+                                                      _pickingPhoto = true);
+                                                  final picked =
+                                                      await pickSingleAvatarFromDevice(
+                                                    context,
+                                                  );
+                                                  if (!mounted) return;
+                                                  setState(() {
+                                                    _pickingPhoto = false;
+                                                    if (picked != null) {
+                                                      _devicePhotoDataUri =
+                                                          picked;
+                                                      photoUrl.clear();
+                                                    }
+                                                  });
+                                                },
+                                          icon: _pickingPhoto
+                                              ? const SizedBox(
+                                                  width: 14,
+                                                  height: 14,
+                                                  child:
+                                                      CircularProgressIndicator(
+                                                    strokeWidth: 2,
+                                                  ),
+                                                )
+                                              : const Icon(
+                                                  Icons
+                                                      .add_photo_alternate_outlined,
+                                                  size: 16,
+                                                ),
+                                          label: Text(
+                                            _pickingPhoto
+                                                ? 'Compressing...'
+                                                : 'Upload from Device',
                                           ),
-                                  ),
+                                        ),
+                                        if (effectivePhoto.isNotEmpty)
+                                          TextButton(
+                                            onPressed: () => setState(() {
+                                              photoUrl.clear();
+                                              _devicePhotoDataUri = '';
+                                            }),
+                                            child: const Text(
+                                              'Clear',
+                                              style: TextStyle(
+                                                color: Color(0xFFD94B64),
+                                              ),
+                                            ),
+                                          ),
+                                      ],
+                                    ),
+                                    const SizedBox(height: 4),
+                                    Text(
+                                      (_devicePhotoDataUri.isNotEmpty &&
+                                              typedPhoto.isEmpty)
+                                          ? 'Device photo ready (compressed JPEG)'
+                                          : 'Optional device photo or HTTPS URL (initials used if blank)',
+                                      style: TextStyle(
+                                        fontSize: 11.5,
+                                        fontWeight: FontWeight.w600,
+                                        color: (_devicePhotoDataUri
+                                                    .isNotEmpty &&
+                                                typedPhoto.isEmpty)
+                                            ? const Color(0xFF24A889)
+                                            : (isDark
+                                                ? Colors.grey.shade400
+                                                : const Color(0xFF667B72)),
+                                      ),
+                                    ),
+                                  ],
                                 ),
-                                const SizedBox(height: 6),
-                                Text(
-                                  'Optional HTTPS avatar URL (initials used if blank)',
-                                  style: TextStyle(
-                                    fontSize: 11.5,
-                                    fontWeight: FontWeight.w600,
-                                    color: isDark
-                                        ? Colors.grey.shade400
-                                        : const Color(0xFF667B72),
-                                  ),
-                                ),
-                              ],
-                            ),
+                              );
+                            },
                           ),
                           const SizedBox(height: 12),
                           TextFormField(
                             controller: photoUrl,
                             keyboardType: TextInputType.url,
-                            onChanged: (_) => setState(() {}),
+                            onChanged: (v) => setState(() {
+                              if (v.trim().isNotEmpty) {
+                                _devicePhotoDataUri = '';
+                              }
+                            }),
                             validator:
                                 AppFormatters.validateOptionalHttpsImageUrl,
                             style: TextStyle(
@@ -518,7 +607,7 @@ class _AuthScreenState extends State<AuthScreen> {
                             ),
                             decoration: InputDecoration(
                               labelText:
-                                  'Profile Photo URL (optional https://...)',
+                                  'Or Profile Photo URL (optional https://...)',
                               prefixIcon: Icon(
                                 Icons.link_rounded,
                                 color: isDark
